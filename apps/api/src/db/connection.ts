@@ -8,7 +8,12 @@ export function getDB(): Pool {
 }
 
 export async function connectDB(): Promise<void> {
-  pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 20 })
+  const isLocal = process.env.DATABASE_URL?.includes('localhost') || process.env.DATABASE_URL?.includes('127.0.0.1');
+  pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: 20,
+    ssl: isLocal ? false : { rejectUnauthorized: false }
+  })
   await pool.query('SELECT 1') // test connection
   console.log('PostgreSQL connected')
 }
