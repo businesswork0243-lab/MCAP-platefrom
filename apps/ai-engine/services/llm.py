@@ -14,8 +14,10 @@ GPT_MODEL    = os.getenv("OPENAI_MODEL",    "gpt-4o")
 # Decide default preference at startup
 _DEFAULT_PREFER = "openai" if OPENAI_KEY else "claude"
 
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", None)
+
 _anthropic_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
-_openai_client    = openai.AsyncOpenAI(api_key=OPENAI_KEY)           if OPENAI_KEY   else None
+_openai_client    = openai.AsyncOpenAI(api_key=OPENAI_KEY, base_url=OPENAI_BASE_URL) if OPENAI_KEY else None
 
 
 @retry(
