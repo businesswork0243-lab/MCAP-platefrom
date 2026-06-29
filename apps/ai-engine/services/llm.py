@@ -1,9 +1,12 @@
 """LLM abstraction — prefers Claude if OPENAI_API_KEY is absent, else GPT-4o primary."""
 import os
+import logging
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 import anthropic
 import openai
+
+log = logging.getLogger("ai-engine")
 
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_KEY    = os.getenv("OPENAI_API_KEY", "")
@@ -11,21 +14,29 @@ OPENAI_KEY    = os.getenv("OPENAI_API_KEY", "")
 CLAUDE_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 GPT_MODEL    = os.getenv("OPENAI_MODEL",    "gpt-4o")
 
-# Decide default preference at startup
-_DEFAULT_PREFER = "openai" if OPENAI_KEY else "claude"
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL") or None  # empty string → None
 
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", None)
-if not OPENAI_BASE_URL:
-    OPENAI_BASE_URL = None
+_DEFAULT_PREFER = "openai" if OPENAI_KEY else "claude"
 
 _anthropic_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_KEY) if ANTHROPIC_KEY else None
 _openai_client    = openai.AsyncOpenAI(api_key=OPENAI_KEY, base_url=OPENAI_BASE_URL) if OPENAI_KEY else None
+
+# Startup diagnostics — visible in Render logs
+log.info("LLM config: primary=%s | anthropic=%s | openai=%s | openai_base=%s",
+         _DEFAULT_PREFER,
+         "SET" if ANTHROPIC_KEY else "NOT SET",
+         "SET" if OPENAI_KEY else "NOT SET",
+         OPENAI_BASE_URL or "default (api.openai.com)")
 
 
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.APITimeoutError)),
+    retry=retry_if_exception_type((
+        anthropic.RateLimitError,
+        anthropic.APITimeoutError,
+        anthropic.APIConnectionError,
+    )),
 )
 async def complete_claude(
     system: str, user: str, temperature: float = 0.7, max_tokens: int = 4096
@@ -47,7 +58,11 @@ async def complete_claude(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type((openai.RateLimitError, openai.APITimeoutError)),
+    retry=retry_if_exception_type((
+        openai.RateLimitError,
+        openai.APITimeoutError,
+        openai.APIConnectionError,  # was missing — connection errors now retry
+    )),
 )
 async def complete_openai(
     system: str, user: str, temperature: float = 0.7, max_tokens: int = 4096
@@ -88,11 +103,12 @@ async def complete(
     try:
         return await _call(primary)
     except Exception as primary_err:
-        # Only fall back if secondary provider is configured
+        log.warning("Primary LLM (%s) failed: %s", primary, primary_err)
         has_secondary = (secondary == "claude" and ANTHROPIC_KEY) or (secondary == "openai" and OPENAI_KEY)
         if has_secondary:
             try:
+                log.info("Falling back to %s", secondary)
                 return await _call(secondary)
-            except Exception as e:
-                raise RuntimeError(f"Both providers failed — primary: {primary_err} | fallback: {e}")
+            except Exception as fallback_err:
+                raise RuntimeError(f"Both providers failed — {primary}: {primary_err} | {secondary}: {fallback_err}")
         raise RuntimeError(f"LLM call failed ({primary}): {primary_err}")
