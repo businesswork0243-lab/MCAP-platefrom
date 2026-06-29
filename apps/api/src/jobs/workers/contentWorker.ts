@@ -4,11 +4,14 @@ import { pool } from '../../db/connection';
 import axios from 'axios';
 
 function buildAiUrl(raw: string | undefined): string {
-  const url = (raw || 'http://localhost:8000').trim();
-  if (url.startsWith('http://') || url.startsWith('https://')) return url;
-  return `https://${url}`;
+  let url = (raw || 'http://localhost:8000').trim().replace(/\/+$/, ''); // strip trailing slashes
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = `https://${url}`;
+  }
+  return url;
 }
 const AI_ENGINE_URL = buildAiUrl(process.env.AI_ENGINE_URL);
+console.log(`[worker] AI_ENGINE_URL resolved to: ${AI_ENGINE_URL}`);
 
 interface ContentJobData {
   requestId: string;
@@ -92,8 +95,10 @@ async function processContentJob(job: Job<ContentJobData>) {
       timeout: 300_000, // 5 min — AI can be slow on free tier
     });
   } catch (err: any) {
-    const detail = err.response?.data?.detail || err.message;
-    console.error(`Pipeline HTTP error for ${requestId}:`, detail);
+    const status = err.response?.status;
+    const body = err.response?.data;
+    const detail = body?.detail || err.message;
+    console.error(`Pipeline error for ${requestId} — URL: ${AI_ENGINE_URL}/pipeline/run | HTTP ${status ?? 'N/A'} | body:`, JSON.stringify(body ?? err.message));
     await updateStatus(requestId, 'failed', { error: detail });
     throw new Error(detail);
   }
