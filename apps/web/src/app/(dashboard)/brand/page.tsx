@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Plus, Pencil, Trash2, X } from 'lucide-react';
 
-const TONE_DIMS = ['formality', 'technicalDepth', 'confidence', 'emotionalIntensity', 'humor', 'storytelling', 'persuasiveness', 'assertiveness'];
+const TONE_DIMS = ['formality', 'technical', 'confidence', 'emotion', 'humor', 'storytelling', 'persuasiveness', 'assertiveness'];
 
 function ToneSlider({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
   return (
@@ -30,7 +30,7 @@ export default function BrandPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<any>(null);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState<any>({ name: '', missionStatement: '', tone: { ...defaultTone }, bannedPhrases: [], preferredTerms: [] });
+  const [form, setForm] = useState<any>({ name: '', mission: '', tone: { ...defaultTone }, bannedPhrases: [], preferredTerms: [] });
   const [tagInput, setTagInput] = useState('');
   const [bannedInput, setBannedInput] = useState('');
 
@@ -48,7 +48,7 @@ export default function BrandPage() {
       queryClient.invalidateQueries({ queryKey: ['brand-profiles'] });
       setShowForm(false);
       setEditing(null);
-      setForm({ name: '', missionStatement: '', tone: { ...defaultTone }, bannedPhrases: [], preferredTerms: [] });
+      setForm({ name: '', mission: '', tone: { ...defaultTone }, bannedPhrases: [], preferredTerms: [] });
     },
   });
 
@@ -59,7 +59,22 @@ export default function BrandPage() {
 
   const openEdit = (profile: any) => {
     setEditing(profile);
-    setForm({ name: profile.name, missionStatement: profile.mission_statement, tone: profile.tone_settings ?? { ...defaultTone }, bannedPhrases: profile.banned_phrases ?? [], preferredTerms: profile.preferred_terms ?? [] });
+    setForm({
+      name: profile.name,
+      mission: profile.mission ?? '',
+      tone: {
+        formality: profile.tone_formality ?? 5,
+        technical: profile.tone_technical ?? 5,
+        confidence: profile.tone_confidence ?? 5,
+        emotion: profile.tone_emotion ?? 5,
+        humor: profile.tone_humor ?? 2,
+        storytelling: profile.tone_storytelling ?? 5,
+        persuasiveness: profile.tone_persuasiveness ?? 5,
+        assertiveness: profile.tone_assertiveness ?? 5,
+      },
+      bannedPhrases: profile.banned_phrases ?? [],
+      preferredTerms: profile.preferred_terms ?? [],
+    });
     setShowForm(true);
   };
 
@@ -99,7 +114,7 @@ export default function BrandPage() {
                     <h2 className="font-semibold">{p.name}</h2>
                     {p.is_default && <Badge variant="secondary">Default</Badge>}
                   </div>
-                  <p className="text-sm text-muted-foreground line-clamp-1 mt-0.5">{p.mission_statement}</p>
+                  <p className="text-sm text-muted-foreground line-clamp-1 mt-0.5">{p.mission}</p>
                 </div>
                 <div className="flex gap-2">
                   <Button variant="ghost" size="icon" onClick={() => openEdit(p)}><Pencil className="w-4 h-4" /></Button>
@@ -125,7 +140,7 @@ export default function BrandPage() {
             <div className="space-y-3">
               <h3 className="text-sm font-semibold">Identity</h3>
               <Input placeholder="Brand Name *" value={form.name} onChange={(e) => setForm((f: any) => ({ ...f, name: e.target.value }))} />
-              <Textarea placeholder="Mission Statement" rows={2} value={form.missionStatement} onChange={(e) => setForm((f: any) => ({ ...f, missionStatement: e.target.value }))} />
+              <Textarea placeholder="Mission Statement" rows={2} value={form.mission} onChange={(e) => setForm((f: any) => ({ ...f, mission: e.target.value }))} />
             </div>
 
             {/* Tone */}
