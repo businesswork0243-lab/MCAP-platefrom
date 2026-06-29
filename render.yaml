@@ -73,6 +73,7 @@ services:
   - type: keyvalue
     name: mcap-redis
     plan: starter
+    ipAllowList: []
 
 databases:
   # 4. PostgreSQL Database
