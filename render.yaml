@@ -16,7 +16,8 @@ services:
           name: mcap-postgres
           property: connectionString
       - key: REDIS_URL
-        fromRedis:
+        fromService:
+          type: keyvalue
           name: mcap-redis
           property: connectionString
       - key: OPENAI_API_KEY
@@ -42,7 +43,8 @@ services:
           name: mcap-postgres
           property: connectionString
       - key: REDIS_URL
-        fromRedis:
+        fromService:
+          type: keyvalue
           name: mcap-redis
           property: connectionString
       - key: AI_ENGINE_URL
@@ -67,15 +69,14 @@ services:
       - key: NEXT_PUBLIC_API_URL
         value: https://mcap-api.onrender.com/api # Update with your custom domain if used
 
+  # 5. Redis Instance (Used for BullMQ and Caching)
+  - type: keyvalue
+    name: mcap-redis
+    plan: starter
+
 databases:
   # 4. PostgreSQL Database
   - name: mcap-postgres
     databaseName: mcap_db
     user: mcap
-    plan: starter
-
-interfaces:
-  # 5. Redis Instance (Used for BullMQ and Caching)
-  - type: redis
-    name: mcap-redis
     plan: starter
