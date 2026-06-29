@@ -26,10 +26,10 @@ router.get('/overview', async (req: Request, res: Response) => {
       pool.query(
         `SELECT
           COUNT(*) AS total_executions,
-          COUNT(*) FILTER (WHERE status = 'completed') AS completed,
-          COUNT(*) FILTER (WHERE status = 'failed') AS failed,
-          ROUND(AVG(tokens_used)) AS avg_tokens,
-          SUM(tokens_used) AS total_tokens
+          COUNT(*) FILTER (WHERE ae.status = 'completed') AS completed,
+          COUNT(*) FILTER (WHERE ae.status = 'failed') AS failed,
+          ROUND(AVG(ae.tokens_used)) AS avg_tokens,
+          SUM(ae.tokens_used) AS total_tokens
         FROM agent_executions ae
         JOIN content_requests cr ON ae.content_request_id = cr.id
         WHERE cr.organization_id = $1 AND ae.created_at >= NOW() - INTERVAL '30 days'`,
