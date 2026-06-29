@@ -58,6 +58,8 @@ services:
         generateValue: true
       - key: PORT
         value: 4000
+      - key: WEB_URL
+        value: https://mcap-web.onrender.com
 
   # 3. Next.js Frontend Service
   - type: web
