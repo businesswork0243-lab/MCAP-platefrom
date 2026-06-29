@@ -47,26 +47,26 @@ export default function NewContentPage() {
   const brands = brandData?.profiles ?? [];
 
   const submitMutation = useMutation({
-    mutationFn: () => api.post('/content', {
+    mutationFn: () => api.post('/content/generate', {
       topic: draft.topic,
-      strategicObjective: draft.strategicObjective,
+      objective: draft.strategicObjective,
       context: draft.context,
-      targetAudience: draft.targetAudience,
+      audience: draft.targetAudience,
       audienceDescription: draft.audienceDescription,
       narrativePerspective: draft.narrativePerspective,
-      targetPlatforms: draft.platforms,
+      platforms: draft.platforms,
       writingStructure: draft.writingStructure,
-      callToAction: draft.callToAction,
+      ctaType: draft.callToAction,
       brandProfileId: draft.brandProfileId,
-      enableHumanization: draft.enableHumanization,
-      enableQA: draft.enableQA,
-      requireApproval: draft.requireApproval,
+      humanizationEnabled: draft.enableHumanization,
+      qaEnabled: draft.enableQA,
+      requiresApproval: draft.requireApproval,
       language: draft.language,
       specialInstructions: draft.specialInstructions,
     }),
     onSuccess: (res) => {
       resetDraft();
-      router.push(`/content/${res.data.request.id}/generating`);
+      router.push(`/content/${res.data.requestId}/generating`);
     },
   });
 
