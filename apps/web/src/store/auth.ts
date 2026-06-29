@@ -63,7 +63,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   fetchMe: async () => {
     try {
       const { data } = await api.get('/auth/me');
-      set({ user: data.user });
+      set({ user: data });
     } catch {
       localStorage.removeItem('mcap_token');
       set({ user: null, token: null });

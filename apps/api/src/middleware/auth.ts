@@ -26,8 +26,8 @@ export async function authenticate(
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string }
     const user = await queryOne<{ id: string; organization_id: string; email: string; role: string }>(
-      'SELECT id, organization_id, email, role FROM users WHERE id = $1 AND status = $2',
-      [decoded.userId, 'active']
+      'SELECT id, organization_id, email, role FROM users WHERE id = $1',
+      [decoded.userId]
     )
     if (!user) {
       res.status(401).json({ error: 'User not found' })
