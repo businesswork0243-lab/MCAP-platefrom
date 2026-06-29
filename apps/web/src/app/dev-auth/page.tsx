@@ -1,8 +1,8 @@
 'use client';
-import { useEffect } from 'react';
+import { useEffect, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 
-export default function DevAuth() {
+function DevAuthContent() {
   const params = useSearchParams();
   const router = useRouter();
 
@@ -16,4 +16,12 @@ export default function DevAuth() {
   }, [params, router]);
 
   return <div style={{ padding: 24 }}>Setting up dev session...</div>;
+}
+
+export default function DevAuth() {
+  return (
+    <Suspense fallback={<div style={{ padding: 24 }}>Setting up dev session...</div>}>
+      <DevAuthContent />
+    </Suspense>
+  );
 }

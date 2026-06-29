@@ -59,7 +59,15 @@ contentRouter.post('/generate', async (req: AuthenticatedRequest, res: Response)
   )
 
   // Queue the AI pipeline job
-  await addContentJob({ requestId: id, organizationId: req.user!.organizationId })
+  await addContentJob(id, {
+    topic: data.topic,
+    context: data.context,
+    targetPlatform: data.platforms[0],
+    brandProfileId: data.brandProfileId || '',
+    projectId: data.projectId,
+    organizationId: req.user!.organizationId,
+    createdBy: req.user!.id,
+  })
   res.status(202).json({ requestId: id, status: 'queued', message: 'Generation started' })
 })
 

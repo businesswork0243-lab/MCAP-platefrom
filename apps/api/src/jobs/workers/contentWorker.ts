@@ -152,7 +152,7 @@ export function startContentWorker() {
     'content-generation',
     processContentJob,
     {
-      connection: redisConnection,
+      connection: redisConnection as any,
       concurrency: parseInt(process.env.WORKER_CONCURRENCY || '5', 10),
     }
   );

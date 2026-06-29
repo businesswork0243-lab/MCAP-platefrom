@@ -9,7 +9,7 @@ const connection = new IORedis({
 
 // Queue definitions
 export const contentQueue = new Queue('content-generation', {
-  connection,
+  connection: connection as any,
   defaultJobOptions: {
     attempts: 3,
     backoff: { type: 'exponential', delay: 5000 },
@@ -19,7 +19,7 @@ export const contentQueue = new Queue('content-generation', {
 });
 
 export const humanizationQueue = new Queue('humanization', {
-  connection,
+  connection: connection as any,
   defaultJobOptions: {
     attempts: 3,
     backoff: { type: 'exponential', delay: 3000 },
@@ -29,7 +29,7 @@ export const humanizationQueue = new Queue('humanization', {
 });
 
 export const exportQueue = new Queue('export', {
-  connection,
+  connection: connection as any,
   defaultJobOptions: {
     attempts: 2,
     backoff: { type: 'fixed', delay: 2000 },
@@ -39,7 +39,7 @@ export const exportQueue = new Queue('export', {
 });
 
 export const qaQueue = new Queue('qa', {
-  connection,
+  connection: connection as any,
   defaultJobOptions: {
     attempts: 2,
     backoff: { type: 'fixed', delay: 2000 },
@@ -49,7 +49,7 @@ export const qaQueue = new Queue('qa', {
 });
 
 // Queue events for monitoring
-export const contentQueueEvents = new QueueEvents('content-generation', { connection });
+export const contentQueueEvents = new QueueEvents('content-generation', { connection: connection as any });
 
 export async function addContentJob(
   requestId: string,
