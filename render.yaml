@@ -1,0 +1,81 @@
+# Render Blueprint Configuration for M-CAP Platform
+# This file allows deploying the entire stack (Database, Redis, API, AI Engine, and Web) on Render with a single click.
+
+services:
+  # 1. AI Engine Web Service (FastAPI)
+  - type: web
+    name: mcap-ai-engine
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    rootDir: apps/ai-engine
+    plan: starter
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mcap-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromRedis:
+          name: mcap-redis
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-4-6
+
+  # 2. Express API Service
+  - type: web
+    name: mcap-api
+    env: node
+    buildCommand: npm install && npx turbo run build --filter=@mcap/api
+    startCommand: npm run start -w @mcap/api
+    rootDir: . # Must build from root to access packages/shared
+    plan: starter
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mcap-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromRedis:
+          name: mcap-redis
+          property: connectionString
+      - key: AI_ENGINE_URL
+        fromService:
+          type: web
+          name: mcap-ai-engine
+          property: host
+      - key: JWT_SECRET
+        generateValue: true
+      - key: PORT
+        value: 4000
+
+  # 3. Next.js Frontend Service
+  - type: web
+    name: mcap-web
+    env: node
+    buildCommand: npm install && npx turbo run build --filter=@mcap/web
+    startCommand: npm run start -w @mcap/web
+    rootDir: . # Must build from root to access packages/shared
+    plan: starter
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        value: https://mcap-api.onrender.com/api # Update with your custom domain if used
+
+databases:
+  # 4. PostgreSQL Database
+  - name: mcap-postgres
+    databaseName: mcap_db
+    user: mcap
+    plan: starter
+
+interfaces:
+  # 5. Redis Instance (Used for BullMQ and Caching)
+  - type: redis
+    name: mcap-redis
+    plan: starter
