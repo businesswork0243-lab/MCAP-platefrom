@@ -43,14 +43,14 @@ contentRouter.post('/generate', async (req: AuthenticatedRequest, res: Response)
   await query(
     `INSERT INTO content_requests
      (id, project_id, organization_id, created_by, topic, objective, context, audience,
-      audience_description, platforms, writing_structure, narrative_perspective, cta_type,
+      audience_description, platforms, target_platform, writing_structure, narrative_perspective, cta_type,
       brand_profile_id, tone_overrides, humanization_enabled, humanization_level, qa_enabled,
       requires_approval, reading_level, language, special_instructions, reference_urls, keywords, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,'queued')`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,'queued')`,
     [
       id, data.projectId, req.user!.organizationId, req.user!.id,
       data.topic, data.objective, data.context, data.audience, data.audienceDescription,
-      JSON.stringify(data.platforms), data.writingStructure, data.narrativePerspective, data.ctaType,
+      JSON.stringify(data.platforms), data.platforms[0], data.writingStructure, data.narrativePerspective, data.ctaType,
       data.brandProfileId, data.toneOverrides ? JSON.stringify(data.toneOverrides) : null,
       data.humanizationEnabled, data.humanizationLevel, data.qaEnabled, data.requiresApproval,
       data.readingLevel, data.language, data.specialInstructions,
@@ -80,7 +80,7 @@ contentRouter.get('/jobs/:id', async (req: AuthenticatedRequest, res: Response):
   if (!request) { res.status(404).json({ error: 'Not found' }); return }
 
   const executions = await query(
-    'SELECT agent_name, status, tokens_used, duration_ms, error_message FROM agent_executions WHERE request_id = $1 ORDER BY created_at',
+    'SELECT agent_type, status, tokens_used, duration_ms, error_message FROM agent_executions WHERE content_request_id = $1 ORDER BY created_at',
     [req.params.id]
   )
   res.json({ request, executions })
@@ -95,7 +95,7 @@ contentRouter.get('/:id/artifacts', async (req: AuthenticatedRequest, res: Respo
   if (!request) { res.status(404).json({ error: 'Not found' }); return }
 
   const artifacts = await query(
-    'SELECT * FROM artifacts WHERE request_id = $1 ORDER BY platform, version DESC',
+    'SELECT * FROM artifacts WHERE content_request_id = $1 ORDER BY agent_type, version DESC',
     [req.params.id]
   )
   res.json(artifacts)

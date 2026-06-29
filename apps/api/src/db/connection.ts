@@ -1,4 +1,5 @@
 import { Pool } from 'pg'
+import { runMigrations } from './migrate'
 
 export let pool: Pool
 
@@ -14,8 +15,9 @@ export async function connectDB(): Promise<void> {
     max: 20,
     ssl: isLocal ? false : { rejectUnauthorized: false }
   })
-  await pool.query('SELECT 1') // test connection
+  await pool.query('SELECT 1')
   console.log('PostgreSQL connected')
+  await runMigrations(pool)
 }
 
 export async function query<T = Record<string, unknown>>(
