@@ -53,7 +53,7 @@ services:
         fromService:
           type: web
           name: mcap-ai-engine
-          property: host
+          property: url
       - key: JWT_SECRET
         generateValue: true
       - key: PORT
