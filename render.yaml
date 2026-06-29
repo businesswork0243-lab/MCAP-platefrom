@@ -9,7 +9,7 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     rootDir: apps/ai-engine
-    plan: starter
+    plan: free
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -36,7 +36,7 @@ services:
     buildCommand: npm install && npx turbo run build --filter=@mcap/api
     startCommand: npm run start -w @mcap/api
     rootDir: . # Must build from root to access packages/shared
-    plan: starter
+    plan: free
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -64,7 +64,7 @@ services:
     buildCommand: npm install && npx turbo run build --filter=@mcap/web
     startCommand: npm run start -w @mcap/web
     rootDir: . # Must build from root to access packages/shared
-    plan: starter
+    plan: free
     envVars:
       - key: NEXT_PUBLIC_API_URL
         value: https://mcap-api.onrender.com/api # Update with your custom domain if used
@@ -72,7 +72,7 @@ services:
   # 5. Redis Instance (Used for BullMQ and Caching)
   - type: keyvalue
     name: mcap-redis
-    plan: starter
+    plan: free
     ipAllowList: []
 
 databases:
@@ -80,4 +80,4 @@ databases:
   - name: mcap-postgres
     databaseName: mcap_db
     user: mcap
-    plan: starter
+    plan: free
