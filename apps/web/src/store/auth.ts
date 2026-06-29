@@ -30,7 +30,7 @@ interface RegisterData {
 
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
-  token: typeof window !== 'undefined' ? localStorage.getItem('mcap_token') : null,
+  token: null, // always null on init — synced from localStorage after mount in layout
   isLoading: false,
 
   login: async (email, password) => {
