@@ -3,7 +3,12 @@ import { redisConnection } from '../queue';
 import { pool } from '../../db/connection';
 import axios from 'axios';
 
-const AI_ENGINE_URL = process.env.AI_ENGINE_URL || 'http://localhost:8000';
+function buildAiUrl(raw: string | undefined): string {
+  const url = (raw || 'http://localhost:8000').trim();
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  return `https://${url}`;
+}
+const AI_ENGINE_URL = buildAiUrl(process.env.AI_ENGINE_URL);
 
 interface ContentJobData {
   requestId: string;
