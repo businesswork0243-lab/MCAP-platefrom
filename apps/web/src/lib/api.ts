@@ -20,20 +20,17 @@ const TOKEN_KEY = 'mcap_token';
 export const tokenManager = {
   get: (): string | null => {
     if (typeof window === 'undefined') return null;
-    // sessionStorage use karo (tab close hone pe clear hota hai)
-    return sessionStorage.getItem(TOKEN_KEY);
+    return localStorage.getItem(TOKEN_KEY);
   },
   
   set: (token: string): void => {
     if (typeof window === 'undefined') return;
-    sessionStorage.setItem(TOKEN_KEY, token);
+    localStorage.setItem(TOKEN_KEY, token);
   },
   
   clear: (): void => {
     if (typeof window === 'undefined') return;
-    sessionStorage.removeItem(TOKEN_KEY);
-    // Old localStorage token bhi clear karo
-    localStorage.removeItem('mcap_token');
+    localStorage.removeItem(TOKEN_KEY);
   },
 };
 
