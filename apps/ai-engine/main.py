@@ -1,12 +1,14 @@
-"""MCAP AI Engine — FastAPI orchestrator with PDL Prompt Compiler."""
+"""MCAP AI Engine — Production hardened FastAPI orchestrator."""
 import os
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from typing import Optional
 from dotenv import load_dotenv
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 load_dotenv()
@@ -15,21 +17,139 @@ from agents import canonical_writer, platform_optimizer, brand_optimizer, humani
 from services.scoring import score as score_content
 from services.prompt_compiler import PDLRequest, compile as compile_prompt
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+# ── Logging Setup ─────────────────────────────────────────────────────────────
+
+log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, log_level, logging.INFO),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 log = logging.getLogger("ai-engine")
 
+# ── Environment Validation ────────────────────────────────────────────────────
+
+def validate_env() -> None:
+    """Required env vars check karo startup pe."""
+    required = ["OPENAI_API_KEY"]
+    missing = [key for key in required if not os.getenv(key)]
+    if missing:
+        raise EnvironmentError(f"Missing required env vars: {missing}")
+
+# ── CORS Config ───────────────────────────────────────────────────────────────
+
+def get_allowed_origins() -> list[str]:
+    """
+    AI Engine sirf API se call honi chahiye.
+    CORS restrict karo.
+    """
+    origins = [
+        "http://localhost:4000",
+        "http://localhost:3000",
+    ]
+    
+    # Render pe API service ka URL
+    if api_host := os.getenv("ALLOWED_ORIGINS"):
+        # Render host property comes without protocol
+        if not api_host.startswith("http"):
+            api_host = f"https://{api_host}"
+        origins.append(api_host)
+    
+    # Render internal URLs allow karo
+    # (*.onrender.com)
+    return origins
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("MCAP AI Engine started on port %s", os.getenv("PORT", "8000"))
+    """Startup aur shutdown events."""
+    # Startup
+    try:
+        validate_env()
+        log.info(
+            "MCAP AI Engine started | PORT=%s | MODEL=%s | ENV=%s",
+            os.getenv("PORT", "8000"),
+            os.getenv("OPENAI_MODEL", "unknown"),
+            os.getenv("ENVIRONMENT", "development"),
+        )
+    except EnvironmentError as e:
+        log.critical("Startup failed: %s", e)
+        raise
+    
     yield
+    
+    # Shutdown
+    log.info("MCAP AI Engine shutting down")
 
+# ── App Init ──────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="MCAP AI Engine", version="1.0.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(
+    title="MCAP AI Engine",
+    version="1.0.0",
+    description="Multi-agent content pipeline for M-CAP Platform",
+    lifespan=lifespan,
+    # Production mein docs disable karo
+    docs_url="/docs" if os.getenv("ENVIRONMENT") != "production" else None,
+    redoc_url=None,
+)
 
+# ── Middleware ────────────────────────────────────────────────────────────────
 
-# ── Shared model ──────────────────────────────────────────────────────────────
+allowed_origins = get_allowed_origins()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"https://.*\.onrender\.com",  # Render subdomains
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
+)
+
+# ── Request Logging ───────────────────────────────────────────────────────────
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    import time
+    start = time.time()
+    request_id = request.headers.get("X-Request-ID", "unknown")
+    
+    try:
+        response = await call_next(request)
+        duration = round((time.time() - start) * 1000, 2)
+        
+        if request.url.path != "/health":
+            log.info(
+                "%s %s | %d | %sms | req_id=%s",
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration,
+                request_id,
+            )
+        return response
+    except Exception as e:
+        duration = round((time.time() - start) * 1000, 2)
+        log.error("Request failed: %s | %sms | req_id=%s", e, duration, request_id)
+        raise
+
+# ── Global Exception Handler ──────────────────────────────────────────────────
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    log.error("Unhandled exception on %s: %s", request.url.path, exc)
+    
+    is_production = os.getenv("ENVIRONMENT") == "production"
+    
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "error": "Internal server error" if is_production else str(exc),
+            "path": str(request.url.path),
+        }
+    )
+
+# ── Shared Models ─────────────────────────────────────────────────────────────
 
 class BrandProfile(BaseModel):
     name: str = ""
@@ -47,15 +167,32 @@ class BrandProfile(BaseModel):
         d["tone_settings"] = self.tone_settings or self.tone
         return d
 
-
-# ── Health ────────────────────────────────────────────────────────────────────
+# ── Health Check ──────────────────────────────────────────────────────────────
 
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+async def health():
+    return {
+        "status": "ok",
+        "version": "1.0.0",
+        "model": os.getenv("OPENAI_MODEL", "unknown"),
+        "environment": os.getenv("ENVIRONMENT", "development"),
+    }
 
+# ── Pipeline Timeout Helper ───────────────────────────────────────────────────
 
-# ── Individual agent endpoints ────────────────────────────────────────────────
+PIPELINE_TIMEOUT = int(os.getenv("PIPELINE_TIMEOUT_SECONDS", "90"))
+
+async def run_with_timeout(coro, timeout: int = PIPELINE_TIMEOUT):
+    """Coroutine ko timeout ke saath run karo."""
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"Operation timed out after {timeout}s"
+        )
+
+# ── Individual Agents ─────────────────────────────────────────────────────────
 
 class CanonicalRequest(BaseModel):
     topic: str
@@ -66,25 +203,28 @@ class CanonicalRequest(BaseModel):
     perspective: str = "Founder"
     structure: str = "thesis"
     cta: str = ""
-    brandProfile: BrandProfile | None = None
+    brandProfile: Optional[BrandProfile] = None
 
 @app.post("/agents/canonical-writer")
 async def run_canonical_writer(req: CanonicalRequest):
     try:
-        result = await canonical_writer.run(
-            topic=req.topic,
-            objective=req.objective,
-            context=req.context,
-            audience=req.audience,
-            perspective=req.perspective,
-            structure=req.structure,
-            cta=req.cta,
+        result = await run_with_timeout(
+            canonical_writer.run(
+                topic=req.topic,
+                objective=req.objective,
+                context=req.context,
+                audience=req.audience,
+                perspective=req.perspective,
+                structure=req.structure,
+                cta=req.cta,
+            )
         )
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         log.error("canonical_writer failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(status_code=500, detail="Canonical writer failed")
 
 class PlatformRequest(BaseModel):
     canonicalDraft: str
@@ -94,24 +234,33 @@ class PlatformRequest(BaseModel):
 @app.post("/agents/platform-optimizer")
 async def run_platform_optimizer(req: PlatformRequest):
     try:
-        return await platform_optimizer.run(req.canonicalDraft, req.targetPlatform)
+        return await run_with_timeout(
+            platform_optimizer.run(req.canonicalDraft, req.targetPlatform)
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         log.error("platform_optimizer failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(status_code=500, detail="Platform optimizer failed")
 
 class BrandRequest(BaseModel):
     content: str
-    brandProfile: BrandProfile | None = None
+    brandProfile: Optional[BrandProfile] = None
 
 @app.post("/agents/brand-optimizer")
 async def run_brand_optimizer(req: BrandRequest):
     try:
-        return await brand_optimizer.run(req.content, req.brandProfile.as_dict() if req.brandProfile else None)
+        return await run_with_timeout(
+            brand_optimizer.run(
+                req.content,
+                req.brandProfile.as_dict() if req.brandProfile else None
+            )
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         log.error("brand_optimizer failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(status_code=500, detail="Brand optimizer failed")
 
 class HumanizeRequest(BaseModel):
     content: str
@@ -120,91 +269,54 @@ class HumanizeRequest(BaseModel):
 @app.post("/agents/humanizer")
 async def run_humanizer(req: HumanizeRequest):
     try:
-        return await humanizer.run(req.content, req.intensity)
+        return await run_with_timeout(
+            humanizer.run(req.content, req.intensity)
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         log.error("humanizer failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(status_code=500, detail="Humanizer failed")
 
 class QARequest(BaseModel):
     content: str
-    brandProfile: BrandProfile | None = None
+    brandProfile: Optional[BrandProfile] = None
 
 @app.post("/agents/qa")
 async def run_qa(req: QARequest):
     try:
-        return await qa_agent.run(req.content, req.brandProfile.as_dict() if req.brandProfile else None)
+        return await run_with_timeout(
+            qa_agent.run(
+                req.content,
+                req.brandProfile.as_dict() if req.brandProfile else None
+            )
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         log.error("qa_agent failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(status_code=500, detail="QA agent failed")
 
 class ScoreRequest(BaseModel):
     content: str
-    brandProfile: BrandProfile | None = None
+    brandProfile: Optional[BrandProfile] = None
 
 @app.post("/score")
 async def run_score(req: ScoreRequest):
     try:
-        return await score_content(req.content, req.brandProfile.as_dict() if req.brandProfile else None)
+        return await run_with_timeout(
+            score_content(
+                req.content,
+                req.brandProfile.as_dict() if req.brandProfile else None
+            )
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         log.error("scoring failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Scoring failed")
 
-
-# ── PDL Compile endpoint (for frontend preview) ───────────────────────────────
-
-class PDLCompileRequest(BaseModel):
-    topic: str
-    objective: str = "Build thought leadership"
-    audience: str = "General Business"
-    icp_description: str = ""
-    perspective: str = "Founder"
-    writing_structure: str = "thesis"
-    platforms: list[str] = Field(default_factory=lambda: ["linkedin_post"])
-    context: str = ""
-    cta: str = ""
-    language: str = "English"
-    keywords: list[str] = Field(default_factory=list)
-    special_instructions: str = ""
-    enable_humanization: bool = True
-    humanization_intensity: str = "medium"
-    enable_qa: bool = True
-    brandProfile: BrandProfile | None = None
-
-@app.post("/compile")
-async def compile_pdl(req: PDLCompileRequest):
-    """Compile a PDL request and return the structured instruction package (dry run)."""
-    pdl = PDLRequest(
-        topic=req.topic,
-        objective=req.objective,
-        audience=req.audience,
-        icp_description=req.icp_description,
-        perspective=req.perspective,
-        writing_structure=req.writing_structure,
-        platforms=req.platforms,
-        context=req.context,
-        cta=req.cta,
-        language=req.language,
-        keywords=req.keywords,
-        special_instructions=req.special_instructions,
-        enable_humanization=req.enable_humanization,
-        humanization_intensity=req.humanization_intensity,
-        enable_qa=req.enable_qa,
-        brand_profile=req.brandProfile.as_dict() if req.brandProfile else None,
-    )
-    package = compile_prompt(pdl)
-    return {
-        "canonical_instructions": package.canonical_instructions,
-        "platform_instructions": package.platform_instructions,
-        "brand_instructions": package.brand_instructions,
-        "humanization_instructions": package.humanization_instructions,
-        "qa_instructions": package.qa_instructions,
-        "metadata": package.metadata,
-    }
-
-
-# ── Full Pipeline — uses PDL compiler ────────────────────────────────────────
+# ── Full Pipeline ─────────────────────────────────────────────────────────────
 
 class FullPipelineRequest(BaseModel):
     topic: str
@@ -215,8 +327,10 @@ class FullPipelineRequest(BaseModel):
     perspective: str = "Founder"
     writing_structure: str = "thesis"
     cta: str = ""
-    targetPlatforms: list[str] = Field(default_factory=lambda: ["linkedin_post"])
-    brandProfile: BrandProfile | None = None
+    targetPlatforms: list[str] = Field(
+        default_factory=lambda: ["linkedin_post"]
+    )
+    brandProfile: Optional[BrandProfile] = None
     enableHumanization: bool = True
     humanizationIntensity: str = "medium"
     enableQA: bool = True
@@ -227,36 +341,40 @@ class FullPipelineRequest(BaseModel):
 @app.post("/pipeline/run")
 async def run_full_pipeline(req: FullPipelineRequest):
     """
-    Full 5-agent pipeline — driven by the PDL Prompt Compiler.
-    Runs platform optimization in parallel for all target platforms.
+    Full 5-agent pipeline with 90s timeout.
+    Platform optimization parallel mein hoti hai.
     """
-    # ── Step 0: Compile via PDL ──────────────────────────────────────────────
-    pdl = PDLRequest(
-        topic=req.topic,
-        objective=req.objective,
-        audience=req.audience,
-        icp_description=req.icp_description,
-        perspective=req.perspective,
-        writing_structure=req.writing_structure,
-        platforms=req.targetPlatforms,
-        context=req.context,
-        cta=req.cta,
-        language=req.language,
-        keywords=req.keywords,
-        special_instructions=req.specialInstructions,
-        enable_humanization=req.enableHumanization,
-        humanization_intensity=req.humanizationIntensity,
-        enable_qa=req.enableQA,
-        brand_profile=req.brandProfile.as_dict() if req.brandProfile else None,
-    )
-    pkg = compile_prompt(pdl)
-    log.info("PDL compiled: structure=%s, platforms=%s", req.writing_structure, req.targetPlatforms)
+    async def _pipeline():
+        pdl = PDLRequest(
+            topic=req.topic,
+            objective=req.objective,
+            audience=req.audience,
+            icp_description=req.icp_description,
+            perspective=req.perspective,
+            writing_structure=req.writing_structure,
+            platforms=req.targetPlatforms,
+            context=req.context,
+            cta=req.cta,
+            language=req.language,
+            keywords=req.keywords,
+            special_instructions=req.specialInstructions,
+            enable_humanization=req.enableHumanization,
+            humanization_intensity=req.humanizationIntensity,
+            enable_qa=req.enableQA,
+            brand_profile=req.brandProfile.as_dict() if req.brandProfile else None,
+        )
+        pkg = compile_prompt(pdl)
+        log.info(
+            "Pipeline start | topic='%s' | platforms=%s | structure=%s",
+            req.topic[:50],
+            req.targetPlatforms,
+            req.writing_structure,
+        )
 
-    profile_dict = req.brandProfile.as_dict() if req.brandProfile else None
-    total_tokens = 0
+        profile_dict = req.brandProfile.as_dict() if req.brandProfile else None
+        total_tokens = 0
 
-    try:
-        # ── Agent 1: Canonical Writer ────────────────────────────────────────
+        # Agent 1: Canonical Writer
         ci = pkg.canonical_instructions
         a1 = await canonical_writer.run(
             topic=ci["topic"],
@@ -269,69 +387,74 @@ async def run_full_pipeline(req: FullPipelineRequest):
         )
         total_tokens += a1["tokensUsed"]
         canonical_draft = a1["content"]
-        log.info("Agent 1 done (%d tokens)", a1["tokensUsed"])
+        log.info("Agent 1 (canonical) done | tokens=%d", a1["tokensUsed"])
 
-        # ── Agent 2: Platform Optimizer (parallel) ───────────────────────────
-        platform_tasks = [
+        # Agent 2: Platform Optimizer (parallel)
+        platform_results = await asyncio.gather(*[
             platform_optimizer.run(canonical_draft=canonical_draft, target_platform=p)
             for p in req.targetPlatforms
-        ]
-        platform_results = await asyncio.gather(*platform_tasks)
+        ])
         for r in platform_results:
             total_tokens += r["tokensUsed"]
-        log.info("Agent 2 done (%d platforms)", len(platform_results))
+        log.info("Agent 2 (platform) done | platforms=%d", len(platform_results))
 
-        # ── Agent 3: Brand Optimizer (parallel) ──────────────────────────────
-        brand_tasks = [
+        # Agent 3: Brand Optimizer (parallel)
+        brand_results = await asyncio.gather(*[
             brand_optimizer.run(content=r["content"], brand_profile=profile_dict)
             for r in platform_results
-        ]
-        brand_results = await asyncio.gather(*brand_tasks)
+        ])
         for r in brand_results:
             total_tokens += r["tokensUsed"]
-        log.info("Agent 3 done")
+        log.info("Agent 3 (brand) done")
 
-        # ── Agent 4: Humanizer (parallel, if enabled) ────────────────────────
+        # Agent 4: Humanizer (parallel, if enabled)
         if pkg.humanization_instructions["enabled"]:
             intensity = pkg.humanization_instructions["intensity"]
-            humanize_tasks = [
+            final_contents = await asyncio.gather(*[
                 humanizer.run(content=r["content"], intensity=intensity)
                 for r in brand_results
-            ]
-            final_contents = await asyncio.gather(*humanize_tasks)
+            ])
             for r in final_contents:
                 total_tokens += r["tokensUsed"]
-            log.info("Agent 4 done (intensity=%s)", intensity)
+            log.info("Agent 4 (humanize) done | intensity=%s", intensity)
         else:
-            final_contents = [{"content": r["content"], "tokensUsed": 0} for r in brand_results]
+            final_contents = [
+                {"content": r["content"], "tokensUsed": 0}
+                for r in brand_results
+            ]
 
-        # ── Agent 5: QA (parallel, if enabled) ──────────────────────────────
+        # Agent 5: QA (parallel, if enabled)
         qa_results = []
         if pkg.qa_instructions["enabled"]:
-            qa_tasks = [
+            qa_results = await asyncio.gather(*[
                 qa_agent.run(content=r["content"], brand_profile=profile_dict)
                 for r in final_contents
-            ]
-            qa_results = await asyncio.gather(*qa_tasks)
+            ])
             for r in qa_results:
                 total_tokens += r["tokensUsed"]
-            log.info("Agent 5 done")
+            log.info("Agent 5 (qa) done")
 
-        # ── Build output ─────────────────────────────────────────────────────
-        artifacts = []
-        for i, platform in enumerate(req.targetPlatforms):
-            qa = qa_results[i] if qa_results else {}
-            artifacts.append({
+        # Final output build karo
+        artifacts = [
+            {
                 "platform": platform,
                 "finalContent": final_contents[i]["content"],
                 "canonicalDraft": canonical_draft,
                 "platformVariant": platform_results[i]["content"],
                 "brandAligned": brand_results[i]["content"],
                 "humanized": final_contents[i]["content"],
-                "qa": qa,
-                "overallScore": qa.get("overallScore", 0),
-                "passed": qa.get("passed", False),
-            })
+                "qa": qa_results[i] if qa_results else {},
+                "overallScore": qa_results[i].get("overallScore", 0) if qa_results else 0,
+                "passed": qa_results[i].get("passed", False) if qa_results else False,
+            }
+            for i, platform in enumerate(req.targetPlatforms)
+        ]
+
+        log.info(
+            "Pipeline complete | total_tokens=%d | artifacts=%d",
+            total_tokens,
+            len(artifacts),
+        )
 
         return {
             "artifacts": artifacts,
@@ -342,11 +465,21 @@ async def run_full_pipeline(req: FullPipelineRequest):
             "structureFlow": a1.get("structureFlow"),
         }
 
+    try:
+        return await run_with_timeout(_pipeline(), timeout=PIPELINE_TIMEOUT)
+    except HTTPException:
+        raise
     except Exception as e:
         log.error("Pipeline failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"Pipeline failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Pipeline execution failed")
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "8000")),
+        reload=os.getenv("ENVIRONMENT") != "production",
+        log_level=log_level.lower(),
+    )

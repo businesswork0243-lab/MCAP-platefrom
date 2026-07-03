@@ -160,6 +160,71 @@ CREATE TABLE IF NOT EXISTS team_invitations (
   status          TEXT        DEFAULT 'pending',
   created_at      TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS icp_profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id UUID REFERENCES organizations(id),
+  brand_profile_id UUID REFERENCES brand_profiles(id),
+  name VARCHAR(255) NOT NULL,
+  
+  -- Layer 1: Buyer Profile
+  basic_characteristics JSONB DEFAULT '{}',
+  interests_ecosystem JSONB DEFAULT '{}',
+  personal_characteristics JSONB DEFAULT '{}',
+  lifestyle_hobbies TEXT,
+  current_challenges JSONB DEFAULT '[]',
+  previous_solutions JSONB DEFAULT '[]',
+  goals_outcomes JSONB DEFAULT '{}',
+  emotional_motivations JSONB DEFAULT '[]',
+  frustrations JSONB DEFAULT '[]',
+  information_sources JSONB DEFAULT '[]',
+  
+  -- Layer 2: Behavioral Mapping
+  personality_scores JSONB DEFAULT '{}',
+  
+  -- Layer 3: Business Expectations
+  need_hierarchy JSONB DEFAULT '{}',
+  time_expectations JSONB DEFAULT '{}',
+  success_criteria JSONB DEFAULT '[]',
+  
+  -- Layer 4: Strategic
+  positioning_strategy TEXT,
+  roi_expectations JSONB DEFAULT '{}',
+  risk_perception TEXT,
+  
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS writing_structures (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id UUID REFERENCES organizations(id),
+  name VARCHAR(255) NOT NULL,
+  description TEXT,
+  structure_flow JSONB NOT NULL, -- Steps/sections array
+  is_system BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS brand_documents (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  brand_profile_id UUID REFERENCES brand_profiles(id),
+  name VARCHAR(255) NOT NULL,
+  file_url TEXT NOT NULL,
+  file_type VARCHAR(100),
+  file_size INTEGER,
+  parsed_content TEXT, -- Extracted text for AI
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS content_repurposes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_content_id UUID REFERENCES artifacts(id),
+  target_platform VARCHAR(100) NOT NULL,
+  repurposed_content TEXT,
+  tokens_used INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
 `
 
 export async function runMigrations(pool: Pool): Promise<void> {

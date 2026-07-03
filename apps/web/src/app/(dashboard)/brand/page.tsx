@@ -1,202 +1,1111 @@
+// apps/web/src/app/(dashboard)/brand/page.tsx
 'use client';
-import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import api from '@/lib/api';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Plus, Pencil, Trash2, X } from 'lucide-react';
 
-const TONE_DIMS = ['formality', 'technical', 'confidence', 'emotion', 'humor', 'storytelling', 'persuasiveness', 'assertiveness'];
+import { useState, useRef, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 
-function ToneSlider({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface BrandDocument {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  status: 'uploading' | 'done' | 'error';
+  progress: number;
+  url?: string;
+}
+
+interface ICPProfile {
+  id: string;
+  name: string;
+  basicChars: {
+    ageGroup: string;
+    education: string;
+    role: string;
+    industry: string;
+    orgType: string;
+    seniority: string;
+    geography: string;
+    revenueRange: string;
+    teamSize: string;
+    purchasingAuthority: string;
+  };
+  interests: string[];
+  currentChallenges: string[];
+  emotionalMotivations: string[];
+  frustrations: string[];
+  goals: string[];
+  infoSources: string[];
+  personalityScores: Record<string, number>;
+  positioningStrategy: string;
+}
+
+interface BrandProfile {
+  // Basic
+  name: string;
+  website: string;
+  industry: string;
+  description: string;
+  missionStatement: string;
+  
+  // Extended - New Fields
+  likes: string[];
+  hates: string[];
+  dislikes: string[];
+  standsFor: string[];
+  standsAgainst: string[];
+  coreMotivations: string[];
+  coreValues: string[];
+  lifePurpose: string;
+  
+  // Voice
+  toneSettings: {
+    formality: number;
+    enthusiasm: number;
+    technicality: number;
+    humor: number;
+    empathy: number;
+  };
+  preferredTerms: string[];
+  bannedPhrases: string[];
+  keyMessages: string[];
+  complianceNotes: string;
+  
+  // Documents
+  documents: BrandDocument[];
+  
+  // ICPs
+  icpProfiles: ICPProfile[];
+}
+
+// ─── Sub Components ───────────────────────────────────────────────────────────
+
+// Tag Input Component
+function TagInput({ 
+  label, 
+  tags, 
+  onChange,
+  placeholder = "Type and press Enter",
+  color = "violet"
+}: { 
+  label: string; 
+  tags: string[]; 
+  onChange: (tags: string[]) => void;
+  placeholder?: string;
+  color?: string;
+}) {
+  const [input, setInput] = useState('');
+  
+  const colorMap: Record<string, string> = {
+    violet: 'bg-violet-500/20 text-violet-300 border-violet-500/30',
+    green: 'bg-green-500/20 text-green-300 border-green-500/30',
+    red: 'bg-red-500/20 text-red-300 border-red-500/30',
+    blue: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
+    amber: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && input.trim()) {
+      e.preventDefault();
+      if (!tags.includes(input.trim())) {
+        onChange([...tags, input.trim()]);
+      }
+      setInput('');
+    }
+    if (e.key === 'Backspace' && !input && tags.length > 0) {
+      onChange(tags.slice(0, -1));
+    }
+  };
+
   return (
-    <div className="space-y-1">
-      <div className="flex justify-between text-xs">
-        <span className="text-muted-foreground capitalize">{label.replace(/([A-Z])/g, ' $1')}</span>
-        <span className="font-medium">{value}</span>
+    <div>
+      <label className="block text-sm font-medium text-gray-400 mb-2">{label}</label>
+      <div className="min-h-[44px] p-2 bg-white/5 border border-white/10 rounded-xl flex flex-wrap gap-2 focus-within:border-violet-500/50 transition-colors">
+        {tags.map((tag, i) => (
+          <span 
+            key={i} 
+            className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-xs font-medium ${colorMap[color]}`}
+          >
+            {tag}
+            <button 
+              onClick={() => onChange(tags.filter((_, idx) => idx !== i))}
+              className="hover:opacity-70 ml-1"
+            >×</button>
+          </span>
+        ))}
+        <input
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={tags.length === 0 ? placeholder : ''}
+          className="flex-1 min-w-[120px] bg-transparent text-sm text-white outline-none placeholder:text-gray-600"
+        />
       </div>
-      <input type="range" min={1} max={10} value={value} onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full accent-primary h-1.5" />
     </div>
   );
 }
 
-const defaultTone = Object.fromEntries(TONE_DIMS.map((d) => [d, 5]));
+// Document Upload Component
+function DocumentUploader({ 
+  documents, 
+  onDocumentsChange 
+}: { 
+  documents: BrandDocument[];
+  onDocumentsChange: (docs: BrandDocument[]) => void;
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
-export default function BrandPage() {
-  const queryClient = useQueryClient();
-  const [editing, setEditing] = useState<any>(null);
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState<any>({ name: '', mission: '', tone: { ...defaultTone }, bannedPhrases: [], preferredTerms: [] });
-  const [tagInput, setTagInput] = useState('');
-  const [bannedInput, setBannedInput] = useState('');
+  const ACCEPTED_TYPES = [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain',
+    'image/png',
+    'image/jpeg',
+  ];
+  
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
-  const { data } = useQuery({
-    queryKey: ['brand-profiles'],
-    queryFn: () => api.get('/brand').then((r) => r.data),
-  });
-  const profiles = data?.profiles ?? [];
+  const handleFiles = useCallback(async (files: FileList | File[]) => {
+    const fileArray = Array.from(files);
+    
+    const newDocs: BrandDocument[] = fileArray
+      .filter(f => ACCEPTED_TYPES.includes(f.type) && f.size <= MAX_FILE_SIZE)
+      .map(f => ({
+        id: `doc-${Date.now()}-${Math.random()}`,
+        name: f.name,
+        size: f.size,
+        type: f.type,
+        status: 'uploading' as const,
+        progress: 0,
+      }));
 
-  const saveMutation = useMutation({
-    mutationFn: () => editing
-      ? api.put(`/brand/${editing.id}`, form)
-      : api.post('/brand', form),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['brand-profiles'] });
-      setShowForm(false);
-      setEditing(null);
-      setForm({ name: '', mission: '', tone: { ...defaultTone }, bannedPhrases: [], preferredTerms: [] });
-    },
-  });
+    const updatedDocs = [...documents, ...newDocs];
+    onDocumentsChange(updatedDocs);
 
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.delete(`/brand/${id}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['brand-profiles'] }),
-  });
+    // Simulate upload (replace with actual API call)
+    let currentDocs = updatedDocs;
+    for (const doc of newDocs) {
+      // Simulate progress
+      for (let progress = 0; progress <= 100; progress += 20) {
+        await new Promise(r => setTimeout(r, 100));
+        currentDocs = currentDocs.map(d => 
+          d.id === doc.id 
+            ? { ...d, progress, status: progress === 100 ? 'done' : 'uploading' }
+            : d
+        ) as BrandDocument[];
+        onDocumentsChange(currentDocs);
+      }
+    }
+  }, [documents, onDocumentsChange]);
 
-  const openEdit = (profile: any) => {
-    setEditing(profile);
-    setForm({
-      name: profile.name,
-      mission: profile.mission ?? '',
-      tone: {
-        formality: profile.tone_formality ?? 5,
-        technical: profile.tone_technical ?? 5,
-        confidence: profile.tone_confidence ?? 5,
-        emotion: profile.tone_emotion ?? 5,
-        humor: profile.tone_humor ?? 2,
-        storytelling: profile.tone_storytelling ?? 5,
-        persuasiveness: profile.tone_persuasiveness ?? 5,
-        assertiveness: profile.tone_assertiveness ?? 5,
-      },
-      bannedPhrases: profile.banned_phrases ?? [],
-      preferredTerms: profile.preferred_terms ?? [],
-    });
-    setShowForm(true);
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    handleFiles(e.dataTransfer.files);
   };
 
-  const addTag = (field: 'preferredTerms' | 'bannedPhrases', value: string, reset: () => void) => {
-    if (!value.trim()) return;
-    setForm((f: any) => ({ ...f, [field]: [...(f[field] ?? []), value.trim()] }));
-    reset();
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   };
 
-  const removeTag = (field: 'preferredTerms' | 'bannedPhrases', idx: number) => {
-    setForm((f: any) => ({ ...f, [field]: f[field].filter((_: any, i: number) => i !== idx) }));
+  const getFileIcon = (type: string) => {
+    if (type.includes('pdf')) return '📄';
+    if (type.includes('word') || type.includes('document')) return '📝';
+    if (type.includes('image')) return '🖼️';
+    return '📎';
   };
 
   return (
-    <div className="p-6 space-y-5">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Brand Profiles</h1>
-        <Button onClick={() => { setEditing(null); setShowForm(true); }}>
-          <Plus className="w-4 h-4" /> New Profile
-        </Button>
+    <div className="space-y-4">
+      <label className="block text-sm font-medium text-gray-400">
+        Brand Documents
+        <span className="ml-2 text-xs text-gray-600">
+          (PDF, DOCX, TXT, Images — max 10MB each)
+        </span>
+      </label>
+
+      {/* Drop Zone */}
+      <div
+        onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={handleDrop}
+        onClick={() => fileInputRef.current?.click()}
+        className={`
+          relative border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all
+          ${isDragging 
+            ? 'border-violet-500 bg-violet-500/10' 
+            : 'border-white/10 hover:border-violet-500/40 hover:bg-white/5'
+          }
+        `}
+      >
+        <div className="text-4xl mb-3">📁</div>
+        <p className="text-white font-medium">Drop files here</p>
+        <p className="text-gray-500 text-sm mt-1">
+          or click to browse — brand guidelines, style guides, tone docs, etc.
+        </p>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg"
+          className="hidden"
+          onChange={e => e.target.files && handleFiles(e.target.files)}
+        />
       </div>
 
-      {/* Profile list */}
-      {!showForm && (
-        <div className="grid gap-3">
-          {profiles.length === 0 && (
-            <div className="text-center py-14 text-muted-foreground">
-              <p>No brand profiles yet</p>
-              <Button className="mt-3" onClick={() => setShowForm(true)}>Create your first profile</Button>
-            </div>
-          )}
-          {profiles.map((p: any) => (
-            <Card key={p.id}>
-              <CardContent className="p-4 flex items-center justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="font-semibold">{p.name}</h2>
-                    {p.is_default && <Badge variant="secondary">Default</Badge>}
+      {/* File List */}
+      {documents.length > 0 && (
+        <div className="space-y-2">
+          {documents.map(doc => (
+            <div 
+              key={doc.id}
+              className="flex items-center gap-3 p-3 bg-white/5 rounded-xl border border-white/10"
+            >
+              <span className="text-xl">{getFileIcon(doc.type)}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-white font-medium truncate">{doc.name}</p>
+                <p className="text-xs text-gray-500">{formatSize(doc.size)}</p>
+                {doc.status === 'uploading' && (
+                  <div className="mt-1 h-1 bg-white/10 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-violet-500 transition-all duration-200"
+                      style={{ width: `${doc.progress}%` }}
+                    />
                   </div>
-                  <p className="text-sm text-muted-foreground line-clamp-1 mt-0.5">{p.mission}</p>
-                </div>
-                <div className="flex gap-2">
-                  <Button variant="ghost" size="icon" onClick={() => openEdit(p)}><Pencil className="w-4 h-4" /></Button>
-                  <Button variant="ghost" size="icon" onClick={() => deleteMutation.mutate(p.id)}><Trash2 className="w-4 h-4 text-destructive" /></Button>
-                </div>
-              </CardContent>
-            </Card>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {doc.status === 'done' && (
+                  <span className="text-green-400 text-xs">✓ Done</span>
+                )}
+                {doc.status === 'uploading' && (
+                  <span className="text-violet-400 text-xs">{doc.progress}%</span>
+                )}
+                {doc.status === 'error' && (
+                  <span className="text-red-400 text-xs">✗ Failed</span>
+                )}
+                <button
+                  onClick={e => {
+                    e.stopPropagation();
+                    onDocumentsChange(documents.filter(d => d.id !== doc.id));
+                  }}
+                  className="text-gray-500 hover:text-red-400 transition-colors p-1"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
           ))}
         </div>
       )}
+    </div>
+  );
+}
 
-      {/* Brand form */}
-      {showForm && (
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base">{editing ? 'Edit Brand Profile' : 'New Brand Profile'}</CardTitle>
-              <Button variant="ghost" size="icon" onClick={() => setShowForm(false)}><X className="w-4 h-4" /></Button>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            {/* Identity */}
-            <div className="space-y-3">
-              <h3 className="text-sm font-semibold">Identity</h3>
-              <Input placeholder="Brand Name *" value={form.name} onChange={(e) => setForm((f: any) => ({ ...f, name: e.target.value }))} />
-              <Textarea placeholder="Mission Statement" rows={2} value={form.mission} onChange={(e) => setForm((f: any) => ({ ...f, mission: e.target.value }))} />
-            </div>
+// ICP Builder Modal
+function ICPBuilderModal({
+  onClose,
+  onSave,
+}: {
+  onClose: () => void;
+  onSave: (icp: ICPProfile) => void;
+}) {
+  const [step, setStep] = useState(0);
+  const [icp, setIcp] = useState<ICPProfile>({
+    id: `icp-${Date.now()}`,
+    name: '',
+    basicChars: {
+      ageGroup: '',
+      education: '',
+      role: '',
+      industry: '',
+      orgType: '',
+      seniority: '',
+      geography: '',
+      revenueRange: '',
+      teamSize: '',
+      purchasingAuthority: '',
+    },
+    interests: [],
+    currentChallenges: [],
+    emotionalMotivations: [],
+    frustrations: [],
+    goals: [],
+    infoSources: [],
+    personalityScores: {
+      introversion_extroversion: 5,
+      creativity_analytical: 5,
+      emotional_rational: 5,
+      conservative_experimental: 5,
+      short_long_term: 5,
+    },
+    positioningStrategy: '',
+  });
 
-            {/* Tone */}
-            <div className="space-y-3">
-              <h3 className="text-sm font-semibold">Voice & Tone</h3>
-              <div className="space-y-3">
-                {TONE_DIMS.map((dim) => (
-                  <ToneSlider key={dim} label={dim} value={form.tone?.[dim] ?? 5}
-                    onChange={(v) => setForm((f: any) => ({ ...f, tone: { ...f.tone, [dim]: v } }))} />
+  const PERSONALITY_SCALES = [
+    { key: 'introversion_extroversion', left: 'Introvert', right: 'Extrovert' },
+    { key: 'creativity_analytical', left: 'Creative', right: 'Analytical' },
+    { key: 'emotional_rational', left: 'Emotional', right: 'Rational' },
+    { key: 'conservative_experimental', left: 'Conservative', right: 'Experimental' },
+    { key: 'short_long_term', left: 'Short-term', right: 'Long-term' },
+  ];
+
+  const steps = [
+    'Basic Info',
+    'Characteristics', 
+    'Psychology',
+    'Behavioral Map',
+    'Strategy',
+  ];
+
+  const updateBasicChar = (key: string, value: string) => {
+    setIcp(prev => ({
+      ...prev,
+      basicChars: { ...prev.basicChars, [key]: value }
+    }));
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div 
+        className="absolute inset-0 bg-black/80 backdrop-blur-sm" 
+        onClick={onClose} 
+      />
+      <div className="relative w-full max-w-2xl bg-[#0F0F10] border border-white/10 rounded-2xl overflow-hidden">
+        
+        {/* Header */}
+        <div className="p-6 border-b border-white/10">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold text-white">
+              Build ICP Profile
+            </h2>
+            <button onClick={onClose} className="text-gray-500 hover:text-white">
+              ✕
+            </button>
+          </div>
+          
+          {/* Step Indicators */}
+          <div className="flex gap-2">
+            {steps.map((s, i) => (
+              <button
+                key={i}
+                onClick={() => setStep(i)}
+                className={`flex-1 py-1.5 text-xs rounded-lg font-medium transition-all ${
+                  i === step 
+                    ? 'bg-violet-600 text-white' 
+                    : i < step
+                    ? 'bg-violet-500/20 text-violet-400'
+                    : 'bg-white/5 text-gray-500'
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="p-6 max-h-[60vh] overflow-y-auto space-y-5">
+          
+          {/* Step 0: Basic Info */}
+          {step === 0 && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-400 mb-2">
+                  ICP Name *
+                </label>
+                <input
+                  value={icp.name}
+                  onChange={e => setIcp(p => ({ ...p, name: e.target.value }))}
+                  placeholder="e.g. Mid-Market SaaS Founder"
+                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-gray-600 focus:border-violet-500/50 outline-none"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                {[
+                  { key: 'role', label: 'Job Role / Title', placeholder: 'e.g. VP Marketing' },
+                  { key: 'seniority', label: 'Seniority', placeholder: 'e.g. Director, C-Suite' },
+                  { key: 'industry', label: 'Industry', placeholder: 'e.g. SaaS, Healthcare' },
+                  { key: 'orgType', label: 'Organization Type', placeholder: 'e.g. Startup, Enterprise' },
+                  { key: 'ageGroup', label: 'Age Group', placeholder: 'e.g. 30-45' },
+                  { key: 'teamSize', label: 'Team Size', placeholder: 'e.g. 10-50' },
+                  { key: 'revenueRange', label: 'Revenue Range', placeholder: 'e.g. $1M-$10M' },
+                  { key: 'geography', label: 'Geography', placeholder: 'e.g. North America' },
+                ].map(({ key, label, placeholder }) => (
+                  <div key={key}>
+                    <label className="block text-sm font-medium text-gray-400 mb-1">{label}</label>
+                    <input
+                      value={icp.basicChars[key as keyof typeof icp.basicChars]}
+                      onChange={e => updateBasicChar(key, e.target.value)}
+                      placeholder={placeholder}
+                      className="w-full px-3 py-2.5 bg-white/5 border border-white/10 rounded-xl text-sm text-white placeholder:text-gray-600 focus:border-violet-500/50 outline-none"
+                    />
+                  </div>
                 ))}
               </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-400 mb-1">
+                  Purchasing Authority
+                </label>
+                <select
+                  value={icp.basicChars.purchasingAuthority}
+                  onChange={e => updateBasicChar('purchasingAuthority', e.target.value)}
+                  className="w-full px-3 py-2.5 bg-white/5 border border-white/10 rounded-xl text-sm text-white focus:border-violet-500/50 outline-none"
+                >
+                  <option value="">Select...</option>
+                  <option value="sole_decision_maker">Sole Decision Maker</option>
+                  <option value="strong_influence">Strong Influence</option>
+                  <option value="committee">Part of Committee</option>
+                  <option value="recommender">Recommender Only</option>
+                </select>
+              </div>
             </div>
+          )}
 
-            {/* Preferred terms */}
-            <div className="space-y-2">
-              <h3 className="text-sm font-semibold">Preferred Terms</h3>
-              <div className="flex gap-2">
-                <Input placeholder="Add term..." value={tagInput} onChange={(e) => setTagInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { addTag('preferredTerms', tagInput, () => setTagInput('')); e.preventDefault(); } }} />
-                <Button size="sm" variant="outline" onClick={() => addTag('preferredTerms', tagInput, () => setTagInput(''))}>Add</Button>
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {(form.preferredTerms ?? []).map((t: string, i: number) => (
-                  <span key={i} className="inline-flex items-center gap-1 bg-secondary text-secondary-foreground text-xs px-2 py-0.5 rounded-full">
-                    {t} <button onClick={() => removeTag('preferredTerms', i)}><X className="w-3 h-3" /></button>
-                  </span>
-                ))}
-              </div>
+          {/* Step 1: Characteristics (SIRF Layer 1) */}
+          {step === 1 && (
+            <div className="space-y-5">
+              <TagInput
+                label="Current Challenges"
+                tags={icp.currentChallenges}
+                onChange={v => setIcp(p => ({ ...p, currentChallenges: v }))}
+                placeholder="Add a challenge and press Enter"
+                color="red"
+              />
+              <TagInput
+                label="Goals & Desired Outcomes"
+                tags={icp.goals}
+                onChange={v => setIcp(p => ({ ...p, goals: v }))}
+                placeholder="Add a goal and press Enter"
+                color="green"
+              />
+              <TagInput
+                label="Frustrations (with current solutions)"
+                tags={icp.frustrations}
+                onChange={v => setIcp(p => ({ ...p, frustrations: v }))}
+                placeholder="Add a frustration and press Enter"
+                color="amber"
+              />
+              <TagInput
+                label="Information Sources (where they learn)"
+                tags={icp.infoSources}
+                onChange={v => setIcp(p => ({ ...p, infoSources: v }))}
+                placeholder="e.g. LinkedIn, G2, Industry Reports"
+                color="blue"
+              />
+              <TagInput
+                label="Professional Interests"
+                tags={icp.interests}
+                onChange={v => setIcp(p => ({ ...p, interests: v }))}
+                placeholder="e.g. Growth hacking, Product-led growth"
+                color="violet"
+              />
             </div>
+          )}
 
-            {/* Banned phrases */}
-            <div className="space-y-2">
-              <h3 className="text-sm font-semibold">Banned Phrases</h3>
-              <div className="flex gap-2">
-                <Input placeholder="e.g. game-changing, leverage..." value={bannedInput} onChange={(e) => setBannedInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { addTag('bannedPhrases', bannedInput, () => setBannedInput('')); e.preventDefault(); } }} />
-                <Button size="sm" variant="outline" onClick={() => addTag('bannedPhrases', bannedInput, () => setBannedInput(''))}>Add</Button>
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {(form.bannedPhrases ?? []).map((t: string, i: number) => (
-                  <span key={i} className="inline-flex items-center gap-1 bg-destructive/10 text-destructive text-xs px-2 py-0.5 rounded-full">
-                    {t} <button onClick={() => removeTag('bannedPhrases', i)}><X className="w-3 h-3" /></button>
-                  </span>
-                ))}
+          {/* Step 2: Psychology */}
+          {step === 2 && (
+            <div className="space-y-5">
+              <TagInput
+                label="Emotional Motivations"
+                tags={icp.emotionalMotivations}
+                onChange={v => setIcp(p => ({ ...p, emotionalMotivations: v }))}
+                placeholder="e.g. Recognition, Career advancement"
+                color="violet"
+              />
+              <div>
+                <label className="block text-sm font-medium text-gray-400 mb-3">
+                  Positioning Strategy
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    'Strategic Advisor',
+                    'Technology Partner', 
+                    'Cost Optimizer',
+                    'Innovation Leader',
+                    'Reliability Specialist',
+                    'Growth Accelerator',
+                    'Risk Reduction Expert',
+                    'Industry Expert',
+                  ].map(strategy => (
+                    <button
+                      key={strategy}
+                      onClick={() => setIcp(p => ({ ...p, positioningStrategy: strategy }))}
+                      className={`p-3 rounded-xl text-sm text-left transition-all border ${
+                        icp.positioningStrategy === strategy
+                          ? 'bg-violet-600/20 border-violet-500 text-violet-300'
+                          : 'bg-white/5 border-white/10 text-gray-400 hover:border-white/20'
+                      }`}
+                    >
+                      {strategy}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
+          )}
 
-            <div className="flex gap-2 pt-2">
-              <Button onClick={() => saveMutation.mutate()} loading={saveMutation.isPending} disabled={!form.name}>
-                Save Profile
-              </Button>
-              <Button variant="outline" onClick={() => setShowForm(false)}>Cancel</Button>
+          {/* Step 3: Behavioral Map (SIRF Layer 2) */}
+          {step === 3 && (
+            <div className="space-y-6">
+              <p className="text-sm text-gray-500">
+                Rate this ICP on each scale (1 = left, 10 = right)
+              </p>
+              {PERSONALITY_SCALES.map(({ key, left, right }) => (
+                <div key={key}>
+                  <div className="flex justify-between text-xs text-gray-500 mb-2">
+                    <span>{left}</span>
+                    <span className="text-white font-medium">
+                      {icp.personalityScores[key] ?? 5}/10
+                    </span>
+                    <span>{right}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={1}
+                    max={10}
+                    value={icp.personalityScores[key] ?? 5}
+                    onChange={e => setIcp(p => ({
+                      ...p,
+                      personalityScores: {
+                        ...p.personalityScores,
+                        [key]: Number(e.target.value)
+                      }
+                    }))}
+                    className="w-full h-2 rounded-full appearance-none cursor-pointer"
+                    style={{
+                      background: `linear-gradient(to right, #7c3aed ${((icp.personalityScores[key] ?? 5) - 1) * 11.1}%, rgba(255,255,255,0.1) ${((icp.personalityScores[key] ?? 5) - 1) * 11.1}%)`
+                    }}
+                  />
+                </div>
+              ))}
             </div>
-          </CardContent>
-        </Card>
-      )}
+          )}
+
+          {/* Step 4: Strategy Summary */}
+          {step === 4 && (
+            <div className="space-y-4">
+              <div className="p-4 bg-violet-500/10 border border-violet-500/20 rounded-xl">
+                <h3 className="text-violet-300 font-medium mb-3">ICP Summary Preview</h3>
+                <div className="space-y-2 text-sm">
+                  <p className="text-white font-medium">{icp.name || 'Unnamed ICP'}</p>
+                  <p className="text-gray-400">
+                    {icp.basicChars.role} • {icp.basicChars.industry} • {icp.basicChars.seniority}
+                  </p>
+                  {icp.currentChallenges.length > 0 && (
+                    <div>
+                      <p className="text-gray-500 text-xs mt-2 mb-1">KEY CHALLENGES</p>
+                      <div className="flex flex-wrap gap-1">
+                        {icp.currentChallenges.slice(0, 3).map((c, i) => (
+                          <span key={i} className="px-2 py-0.5 bg-red-500/20 text-red-300 text-xs rounded-full">
+                            {c}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {icp.positioningStrategy && (
+                    <p className="text-gray-400 text-xs mt-2">
+                      Position as: <span className="text-violet-300">{icp.positioningStrategy}</span>
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="p-6 border-t border-white/10 flex justify-between">
+          <button
+            onClick={() => step > 0 ? setStep(step - 1) : onClose()}
+            className="px-5 py-2.5 text-sm text-gray-400 hover:text-white transition-colors"
+          >
+            {step === 0 ? 'Cancel' : '← Back'}
+          </button>
+          
+          {step < steps.length - 1 ? (
+            <button
+              onClick={() => setStep(step + 1)}
+              disabled={step === 0 && !icp.name}
+              className="px-6 py-2.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-sm font-medium rounded-xl transition-all"
+            >
+              Continue →
+            </button>
+          ) : (
+            <button
+              onClick={() => onSave(icp)}
+              disabled={!icp.name}
+              className="px-6 py-2.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white text-sm font-medium rounded-xl transition-all"
+            >
+              Save ICP Profile ✓
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Brand Page ──────────────────────────────────────────────────────────
+
+const TABS = [
+  { id: 'identity', label: 'Identity', icon: '🏢' },
+  { id: 'voice', label: 'Voice & Tone', icon: '🎙️' },
+  { id: 'values', label: 'Values & Beliefs', icon: '💎' },
+  { id: 'documents', label: 'Documents', icon: '📁' },
+  { id: 'icp', label: 'ICP Profiles', icon: '🎯' },
+];
+
+export default function BrandPage() {
+  const [activeTab, setActiveTab] = useState('identity');
+  const [showICPModal, setShowICPModal] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const [profile, setProfile] = useState<BrandProfile>({
+    name: '',
+    website: '',
+    industry: '',
+    description: '',
+    missionStatement: '',
+    likes: [],
+    hates: [],
+    dislikes: [],
+    standsFor: [],
+    standsAgainst: [],
+    coreMotivations: [],
+    coreValues: [],
+    lifePurpose: '',
+    toneSettings: {
+      formality: 5,
+      enthusiasm: 5,
+      technicality: 5,
+      humor: 3,
+      empathy: 7,
+    },
+    preferredTerms: [],
+    bannedPhrases: [],
+    keyMessages: [],
+    complianceNotes: '',
+    documents: [],
+    icpProfiles: [],
+  });
+
+  const update = (key: keyof BrandProfile, value: unknown) => {
+    setProfile(p => ({ ...p, [key]: value }));
+  };
+
+  const handleSaveICP = (icp: ICPProfile) => {
+    setProfile(p => ({
+      ...p,
+      icpProfiles: [...p.icpProfiles, icp]
+    }));
+    setShowICPModal(false);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      // await api.post('/brand', profile);
+      await new Promise(r => setTimeout(r, 800)); // Simulate
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const TONE_SLIDERS = [
+    { key: 'formality', label: 'Formality', left: 'Casual', right: 'Formal' },
+    { key: 'enthusiasm', label: 'Enthusiasm', left: 'Reserved', right: 'Energetic' },
+    { key: 'technicality', label: 'Technicality', left: 'Simple', right: 'Technical' },
+    { key: 'humor', label: 'Humor', left: 'Serious', right: 'Playful' },
+    { key: 'empathy', label: 'Empathy', left: 'Direct', right: 'Empathetic' },
+  ];
+
+  return (
+    <div className="min-h-screen bg-[#080809] text-white">
+      <div className="max-w-4xl mx-auto px-6 py-10">
+        
+        {/* Header */}
+        <div className="flex items-start justify-between mb-8">
+          <div>
+            <h1 className="text-3xl font-bold">Brand Profile</h1>
+            <p className="text-gray-500 mt-1">
+              Define your brand identity — the AI uses this across all content.
+            </p>
+          </div>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex items-center gap-2 px-6 py-2.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white font-medium rounded-xl transition-all"
+          >
+            {saving ? (
+              <>
+                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                Saving...
+              </>
+            ) : saved ? (
+              <>✓ Saved</>
+            ) : (
+              <>Save Profile</>
+            )}
+          </button>
+        </div>
+
+        {/* Tab Navigation */}
+        <div className="flex gap-1 p-1 bg-white/5 rounded-xl mb-8 border border-white/10">
+          {TABS.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium rounded-lg transition-all ${
+                activeTab === tab.id
+                  ? 'bg-violet-600 text-white shadow-lg shadow-violet-500/20'
+                  : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              <span>{tab.icon}</span>
+              <span className="hidden sm:block">{tab.label}</span>
+            </button>
+          ))}
+        </div>
+
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={activeTab}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.15 }}
+            className="space-y-6"
+          >
+
+            {/* ── Identity Tab ── */}
+            {activeTab === 'identity' && (
+              <div className="bg-white/3 border border-white/10 rounded-2xl p-6 space-y-5">
+                <h2 className="text-lg font-semibold">Core Identity</h2>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Brand / Person Name *</label>
+                    <input
+                      value={profile.name}
+                      onChange={e => update('name', e.target.value)}
+                      placeholder="e.g. Sameer Thakur or Acme Corp"
+                      className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-gray-600 focus:border-violet-500/50 outline-none transition-colors"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Website</label>
+                    <input
+                      value={profile.website}
+                      onChange={e => update('website', e.target.value)}
+                      placeholder="https://yoursite.com"
+                      className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-gray-600 focus:border-violet-500/50 outline-none transition-colors"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-2">Industry</label>
+                  <input
+                    value={profile.industry}
+                    onChange={e => update('industry', e.target.value)}
+                    placeholder="e.g. SaaS, Marketing Agency, Consulting"
+                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-gray-600 focus:border-violet-500/50 outline-none transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-2">Brand Description</label>
+                  <textarea
+                    value={profile.description}
+                    onChange={e => update('description', e.target.value)}
+                    placeholder="What does your brand do? Who do you serve?"
+                    rows={3}
+                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-gray-600 focus:border-violet-500/50 outline-none transition-colors resize-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-2">Mission Statement</label>
+                  <textarea
+                    value={profile.missionStatement}
+                    onChange={e => update('missionStatement', e.target.value)}
+                    placeholder="Why does your brand exist?"
+                    rows={2}
+                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-gray-600 focus:border-violet-500/50 outline-none transition-colors resize-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-2">
+                    Life Purpose / Brand Purpose
+                  </label>
+                  <textarea
+                    value={profile.lifePurpose}
+                    onChange={e => update('lifePurpose', e.target.value)}
+                    placeholder="What is the deeper purpose — beyond revenue? What change do you want to create in the world?"
+                    rows={3}
+                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-gray-600 focus:border-violet-500/50 outline-none transition-colors resize-none"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* ── Voice Tab ── */}
+            {activeTab === 'voice' && (
+              <div className="space-y-6">
+                <div className="bg-white/3 border border-white/10 rounded-2xl p-6 space-y-6">
+                  <h2 className="text-lg font-semibold">Tone Sliders</h2>
+                  {TONE_SLIDERS.map(({ key, label, left, right }) => (
+                    <div key={key}>
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-sm font-medium text-white">{label}</span>
+                        <span className="text-xs text-violet-400 font-medium">
+                          {profile.toneSettings[key as keyof typeof profile.toneSettings]}/10
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-gray-500 w-16 text-right">{left}</span>
+                        <input
+                          type="range"
+                          min={1}
+                          max={10}
+                          value={profile.toneSettings[key as keyof typeof profile.toneSettings]}
+                          onChange={e => update('toneSettings', {
+                            ...profile.toneSettings,
+                            [key]: Number(e.target.value)
+                          })}
+                          className="flex-1 h-2 rounded-full appearance-none cursor-pointer"
+                          style={{
+                            background: `linear-gradient(to right, #7c3aed ${(profile.toneSettings[key as keyof typeof profile.toneSettings] - 1) * 11.1}%, rgba(255,255,255,0.1) ${(profile.toneSettings[key as keyof typeof profile.toneSettings] - 1) * 11.1}%)`
+                          }}
+                        />
+                        <span className="text-xs text-gray-500 w-16">{right}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="bg-white/3 border border-white/10 rounded-2xl p-6 space-y-5">
+                  <h2 className="text-lg font-semibold">Vocabulary Control</h2>
+                  <TagInput
+                    label="Preferred Terms (words to use more)"
+                    tags={profile.preferredTerms}
+                    onChange={v => update('preferredTerms', v)}
+                    placeholder="e.g. growth, founder, build"
+                    color="green"
+                  />
+                  <TagInput
+                    label="Banned Phrases (never use these)"
+                    tags={profile.bannedPhrases}
+                    onChange={v => update('bannedPhrases', v)}
+                    placeholder="e.g. leverage, synergy, paradigm"
+                    color="red"
+                  />
+                  <TagInput
+                    label="Key Messages (repeat these themes)"
+                    tags={profile.keyMessages}
+                    onChange={v => update('keyMessages', v)}
+                    placeholder="e.g. founders build the future"
+                    color="violet"
+                  />
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-2">
+                      Compliance Notes
+                    </label>
+                    <textarea
+                      value={profile.complianceNotes}
+                      onChange={e => update('complianceNotes', e.target.value)}
+                      placeholder="Any legal, regulatory, or industry-specific restrictions..."
+                      rows={3}
+                      className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-gray-600 focus:border-violet-500/50 outline-none resize-none transition-colors"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Values Tab (NEW) ── */}
+            {activeTab === 'values' && (
+              <div className="space-y-6">
+                <div className="bg-white/3 border border-white/10 rounded-2xl p-6 space-y-5">
+                  <h2 className="text-lg font-semibold">What the Brand Loves & Hates</h2>
+                  <p className="text-sm text-gray-500">
+                    These inform content perspective, topics to champion or avoid.
+                  </p>
+                  <TagInput
+                    label="❤️ Likes (topics, ideas, approaches the brand loves)"
+                    tags={profile.likes}
+                    onChange={v => update('likes', v)}
+                    placeholder="e.g. transparency, builder culture, long-term thinking"
+                    color="green"
+                  />
+                  <TagInput
+                    label="😤 Hates (strong oppositions)"
+                    tags={profile.hates}
+                    onChange={v => update('hates', v)}
+                    placeholder="e.g. corporate jargon, shortcuts, fake gurus"
+                    color="red"
+                  />
+                  <TagInput
+                    label="😒 Dislikes (mild oppositions)"
+                    tags={profile.dislikes}
+                    onChange={v => update('dislikes', v)}
+                    placeholder="e.g. over-automation, vanity metrics"
+                    color="amber"
+                  />
+                </div>
+
+                <div className="bg-white/3 border border-white/10 rounded-2xl p-6 space-y-5">
+                  <h2 className="text-lg font-semibold">Positions & Beliefs</h2>
+                  <TagInput
+                    label="✊ Stands For (principles championed)"
+                    tags={profile.standsFor}
+                    onChange={v => update('standsFor', v)}
+                    placeholder="e.g. founder freedom, merit over pedigree"
+                    color="green"
+                  />
+                  <TagInput
+                    label="🚫 Stands Against (rejected ideas)"
+                    tags={profile.standsAgainst}
+                    onChange={v => update('standsAgainst', v)}
+                    placeholder="e.g. hustle culture, exploitative pricing"
+                    color="red"
+                  />
+                </div>
+
+                <div className="bg-white/3 border border-white/10 rounded-2xl p-6 space-y-5">
+                  <h2 className="text-lg font-semibold">Core Motivations & Values</h2>
+                  <TagInput
+                    label="⚡ Core Motivations (what drives the brand daily)"
+                    tags={profile.coreMotivations}
+                    onChange={v => update('coreMotivations', v)}
+                    placeholder="e.g. democratizing knowledge, proving the model"
+                    color="violet"
+                  />
+                  <TagInput
+                    label="💎 Core Values (non-negotiable principles)"
+                    tags={profile.coreValues}
+                    onChange={v => update('coreValues', v)}
+                    placeholder="e.g. honesty, craftsmanship, respect for time"
+                    color="blue"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* ── Documents Tab ── */}
+            {activeTab === 'documents' && (
+              <div className="bg-white/3 border border-white/10 rounded-2xl p-6">
+                <h2 className="text-lg font-semibold mb-2">Brand Documents</h2>
+                <p className="text-sm text-gray-500 mb-6">
+                  Upload brand guidelines, tone of voice docs, style guides — 
+                  the AI will extract and apply context from these.
+                </p>
+                <DocumentUploader
+                  documents={profile.documents}
+                  onDocumentsChange={v => update('documents', v)}
+                />
+              </div>
+            )}
+
+            {/* ── ICP Tab ── */}
+            {activeTab === 'icp' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-lg font-semibold">ICP Profiles</h2>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Build detailed audience profiles using the SIRF framework.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setShowICPModal(true)}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-xl transition-all"
+                  >
+                    + New ICP
+                  </button>
+                </div>
+
+                {profile.icpProfiles.length === 0 ? (
+                  <div className="bg-white/3 border border-dashed border-white/10 rounded-2xl p-12 text-center">
+                    <div className="text-5xl mb-4">🎯</div>
+                    <p className="text-white font-medium">No ICP profiles yet</p>
+                    <p className="text-gray-500 text-sm mt-2">
+                      Create your first ICP using the SIRF framework
+                    </p>
+                    <button
+                      onClick={() => setShowICPModal(true)}
+                      className="mt-6 px-6 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-xl transition-all inline-block"
+                    >
+                      Build First ICP →
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid gap-4">
+                    {profile.icpProfiles.map(icp => (
+                      <div
+                        key={icp.id}
+                        className="p-5 bg-white/3 border border-white/10 hover:border-violet-500/30 rounded-2xl transition-all"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <h3 className="font-semibold text-white">{icp.name}</h3>
+                            <p className="text-sm text-gray-500 mt-1">
+                              {[icp.basicChars.role, icp.basicChars.industry, icp.basicChars.seniority]
+                                .filter(Boolean).join(' • ')}
+                            </p>
+                            <div className="flex flex-wrap gap-2 mt-3">
+                              {icp.currentChallenges.slice(0, 3).map((c, i) => (
+                                <span key={i} className="px-2 py-1 bg-red-500/15 text-red-400 text-xs rounded-full border border-red-500/20">
+                                  {c}
+                                </span>
+                              ))}
+                              {icp.goals.slice(0, 2).map((g, i) => (
+                                <span key={i} className="px-2 py-1 bg-green-500/15 text-green-400 text-xs rounded-full border border-green-500/20">
+                                  {g}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="flex gap-2">
+                            <button className="text-xs text-gray-500 hover:text-white transition-colors px-3 py-1.5 rounded-lg border border-white/10 hover:border-white/20">
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => setProfile(p => ({
+                                ...p,
+                                icpProfiles: p.icpProfiles.filter(i => i.id !== icp.id)
+                              }))}
+                              className="text-xs text-gray-500 hover:text-red-400 transition-colors px-3 py-1.5 rounded-lg border border-white/10 hover:border-red-500/30"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </motion.div>
+        </AnimatePresence>
+      </div>
+
+      {/* ICP Modal */}
+      <AnimatePresence>
+        {showICPModal && (
+          <ICPBuilderModal
+            onClose={() => setShowICPModal(false)}
+            onSave={handleSaveICP}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

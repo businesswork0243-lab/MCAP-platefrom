@@ -2,14 +2,18 @@
 # This file allows deploying the entire stack (Database, Redis, API, AI Engine, and Web) on Render with a single click.
 
 services:
-  # 1. AI Engine Web Service (FastAPI)
+  # ──────────────────────────────────────────
+  # 1. AI Engine (FastAPI + Python)
+  # ──────────────────────────────────────────
   - type: web
     name: mcap-ai-engine
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    rootDir: apps/ai-engine
+    region: oregon
     plan: free
+    rootDir: apps/ai-engine
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1 --timeout-keep-alive 75
+    healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -21,24 +25,38 @@ services:
           name: mcap-redis
           property: connectionString
       - key: OPENAI_API_KEY
-        sync: false
+        sync: false          # Manually set in Render dashboard
       - key: OPENAI_BASE_URL
-        value: ""
+        value: "https://api.deepseek.com"
       - key: ANTHROPIC_API_KEY
-        sync: false
+        sync: false          # Manually set in Render dashboard
       - key: OPENAI_MODEL
-        value: gpt-4o
+        value: "deepseek-chat"
       - key: ANTHROPIC_MODEL
-        value: claude-sonnet-4-6
+        value: "claude-sonnet-4-6"
+      - key: ENVIRONMENT
+        value: "production"
+      - key: LOG_LEVEL
+        value: "INFO"
+      # Allowed origins for AI engine (only API should call it)
+      - key: ALLOWED_ORIGINS
+        fromService:
+          type: web
+          name: mcap-api
+          property: host
 
-  # 2. Express API Service
+  # ──────────────────────────────────────────
+  # 2. Express API (Node.js)
+  # ──────────────────────────────────────────
   - type: web
     name: mcap-api
     env: node
+    region: oregon
+    plan: free
+    rootDir: .
     buildCommand: npm install && npx turbo run build --filter=@mcap/api
     startCommand: npm run start -w @mcap/api
-    rootDir: . # Must build from root to access packages/shared
-    plan: free
+    healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -53,35 +71,105 @@ services:
         fromService:
           type: web
           name: mcap-ai-engine
-          property: url
+          property: host
       - key: JWT_SECRET
+        generateValue: true   # Render auto-generate karega
+      - key: JWT_REFRESH_SECRET
         generateValue: true
-      - key: PORT
-        value: 4000
+      - key: NODE_ENV
+        value: "production"
+      - key: RUN_WORKERS
+        value: "false"        # Worker alag service hai
       - key: WEB_URL
-        value: https://mcap-web.onrender.com
+        fromService:
+          type: web
+          name: mcap-web
+          property: host
+      - key: RATE_LIMIT_WINDOW_MS
+        value: "900000"       # 15 minutes
+      - key: RATE_LIMIT_MAX
+        value: "100"          # 100 requests per window
+      - key: LOG_LEVEL
+        value: "info"
 
-  # 3. Next.js Frontend Service
+  # ──────────────────────────────────────────
+  # 3. Next.js Frontend
+  # ──────────────────────────────────────────
   - type: web
     name: mcap-web
     env: node
+    region: oregon
+    plan: free
+    rootDir: .
     buildCommand: npm install && npx turbo run build --filter=@mcap/web
     startCommand: npm run start -w @mcap/web
-    rootDir: . # Must build from root to access packages/shared
-    plan: free
+    healthCheckPath: /api/health
     envVars:
       - key: NEXT_PUBLIC_API_URL
-        value: https://mcap-api.onrender.com/api # Update with your custom domain if used
+        fromService:
+          type: web
+          name: mcap-api
+          property: host
+      - key: NODE_ENV
+        value: "production"
+      - key: NEXTAUTH_SECRET
+        generateValue: true
 
-  # 5. Redis Instance (Used for BullMQ and Caching)
+  # ──────────────────────────────────────────
+  # 4. Background Worker (BullMQ)
+  # ──────────────────────────────────────────
+  - type: worker
+    name: mcap-worker
+    env: node
+    region: oregon
+    plan: free
+    rootDir: .
+    buildCommand: npm install && npx turbo run build --filter=@mcap/api
+    startCommand: npm run worker -w @mcap/api
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mcap-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: mcap-redis
+          property: connectionString
+      - key: AI_ENGINE_URL
+        fromService:
+          type: web
+          name: mcap-ai-engine
+          property: host
+      - key: NODE_ENV
+        value: "production"
+      - key: RUN_WORKERS
+        value: "true"
+      - key: JWT_SECRET
+        fromService:
+          type: web
+          name: mcap-api
+          envVarKey: JWT_SECRET
+      - key: LOG_LEVEL
+        value: "info"
+
+  # ──────────────────────────────────────────
+  # 5. Redis (Key-Value Store)
+  # ──────────────────────────────────────────
   - type: keyvalue
     name: mcap-redis
+    region: oregon
     plan: free
-    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []           # Only internal Render network
 
 databases:
-  # 4. PostgreSQL Database
+  # ──────────────────────────────────────────
+  # 6. PostgreSQL Database
+  # ──────────────────────────────────────────
   - name: mcap-postgres
     databaseName: mcap_db
     user: mcap
+    region: oregon
     plan: free
+    postgresMajorVersion: 16
