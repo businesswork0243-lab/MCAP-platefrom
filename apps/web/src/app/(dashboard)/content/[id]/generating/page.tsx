@@ -1,116 +1,231 @@
 'use client';
-import { useEffect, useState } from 'react';
-import { useRouter, useParams } from 'next/navigation';
-import { io, Socket } from 'socket.io-client';
-import { Progress } from '@/components/ui/progress';
-import { Button } from '@/components/ui/button';
-import { CheckCircle, Circle, Loader2, XCircle } from 'lucide-react';
 
-const AGENTS = [
-  { key: 'canonical_writer', label: 'Agent 1: Writing canonical draft' },
-  { key: 'platform_optimizer', label: 'Agent 2: Platform optimization' },
-  { key: 'brand_optimizer', label: 'Agent 3: Brand alignment' },
-  { key: 'humanizer', label: 'Agent 4: Humanization' },
-  { key: 'qa', label: 'Agent 5: Quality assurance' },
+import { useState, useEffect } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import { motion, AnimatePresence } from 'framer-motion';
+import { useContentSocket } from '@/hooks/useContentSocket';
+import { useQuery } from '@tanstack/react-query';
+import api from '@/lib/api';
+
+// ─── Progress Step Config ─────────────────────────────────────────────────────
+
+const PROGRESS_STEPS = [
+  { min: 0,  max: 15,  label: 'Initializing pipeline',    icon: '⚙️' },
+  { min: 15, max: 30,  label: 'Fetching brand context',   icon: '🏢' },
+  { min: 30, max: 50,  label: 'Writing canonical draft',  icon: '✍️' },
+  { min: 50, max: 65,  label: 'Platform optimization',    icon: '📱' },
+  { min: 65, max: 75,  label: 'Brand alignment',          icon: '🎯' },
+  { min: 75, max: 85,  label: 'Humanizing content',       icon: '✦'  },
+  { min: 85, max: 95,  label: 'Quality assurance',        icon: '✓'  },
+  { min: 95, max: 100, label: 'Saving results',           icon: '💾' },
 ];
 
-type AgentStatus = 'pending' | 'running' | 'done' | 'failed';
+function getCurrentStep(progress: number) {
+  return PROGRESS_STEPS.find(s => progress >= s.min && progress < s.max)
+    ?? PROGRESS_STEPS[PROGRESS_STEPS.length - 1];
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function GeneratingPage() {
-  const router = useRouter();
-  const params = useParams();
-  const requestId = params.id as string;
+  const { id }  = useParams<{ id: string }>();
+  const router  = useRouter();
 
-  const [progress, setProgress] = useState(0);
-  const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({
-    canonical_writer: 'pending',
-    platform_optimizer: 'pending',
-    brand_optimizer: 'pending',
-    humanizer: 'pending',
-    qa: 'pending',
+  const [progress, setProgress]   = useState(0);
+  const [step, setStep]           = useState(PROGRESS_STEPS[0]);
+  const [status, setStatus]       = useState<'running' | 'done' | 'failed'>('running');
+  const [failReason, setFailReason] = useState('');
+
+  // Poll DB status as fallback (if WebSocket misses events)
+  const { data } = useQuery({
+    queryKey: ['content-generating', id],
+    queryFn:  () => api.get(`/content/jobs/${id}`).then(r => r.data),
+    refetchInterval: (data) => {
+      const s = (data as { request?: { status: string } })?.request?.status;
+      if (['approved', 'awaiting_review', 'generation_failed'].includes(s ?? '')) {
+        return false; // Stop polling
+      }
+      return 5_000; // Poll every 5s
+    },
+    enabled: status === 'running',
   });
-  const [failed, setFailed] = useState(false);
 
+  // Check if already done from DB
   useEffect(() => {
-    const socket: Socket = io(process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:4000', {
-      query: { requestId },
-    });
-
-    socket.on('job:progress', ({ progress: p }: { progress: number }) => {
-      setProgress(p);
-      // Map progress % to agent completion
-      if (p >= 10) setAgentStatuses((s) => ({ ...s, canonical_writer: p >= 35 ? 'done' : 'running' }));
-      if (p >= 35) setAgentStatuses((s) => ({ ...s, platform_optimizer: p >= 55 ? 'done' : 'running' }));
-      if (p >= 55) setAgentStatuses((s) => ({ ...s, brand_optimizer: p >= 75 ? 'done' : 'running' }));
-      if (p >= 75) setAgentStatuses((s) => ({ ...s, humanizer: p >= 90 ? 'done' : 'running' }));
-      if (p >= 90) setAgentStatuses((s) => ({ ...s, qa: p >= 100 ? 'done' : 'running' }));
-    });
-
-    socket.on('job:completed', () => {
+    const s = data?.request?.status;
+    if (s === 'approved' || s === 'awaiting_review') {
       setProgress(100);
-      setAgentStatuses({ canonical_writer: 'done', platform_optimizer: 'done', brand_optimizer: 'done', humanizer: 'done', qa: 'done' });
-      setTimeout(() => router.push(`/content/${requestId}`), 1200);
-    });
+      setStatus('done');
+      setTimeout(() => router.replace(`/content/${id}`), 1_500);
+    } else if (s === 'generation_failed') {
+      setStatus('failed');
+      setFailReason('Generation failed. Please try again.');
+    }
+  }, [data, id, router]);
 
-    socket.on('job:failed', () => setFailed(true));
+  // WebSocket for real-time updates
+  useContentSocket({
+    requestId: id,
+    enabled:   status === 'running',
 
-    return () => { socket.disconnect(); };
-  }, [requestId, router]);
+    onProgress: ({ progress: p, step: stepLabel }) => {
+      setProgress(p);
+      setStep(getCurrentStep(p));
+    },
 
-  const estimatedSec = Math.max(0, Math.round(((100 - progress) / 100) * 60));
+    onCompleted: () => {
+      setProgress(100);
+      setStatus('done');
+      setTimeout(() => router.replace(`/content/${id}`), 1_500);
+    },
+
+    onFailed: ({ reason }) => {
+      setStatus('failed');
+      setFailReason(reason || 'Generation failed');
+    },
+  });
+
+  const currentStep = getCurrentStep(progress);
 
   return (
-    <div className="flex items-center justify-center min-h-screen p-6">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold mb-1">Generating Your Content</h1>
-          <p className="text-muted-foreground text-sm">AI agents are working on your request</p>
-        </div>
+    <div className="min-h-screen bg-[#080809] flex flex-col items-center justify-center gap-10 p-6">
 
-        <div className="bg-card border rounded-xl p-6 space-y-5">
-          {/* Agents */}
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 text-sm text-green-600">
-              <CheckCircle className="w-4 h-4" />
-              <span>Input validated</span>
+      {/* ── Status Icon ── */}
+      <AnimatePresence mode="wait">
+        {status === 'running' && (
+          <motion.div
+            key="running"
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.8, opacity: 0 }}
+            className="relative"
+          >
+            {/* Outer ring */}
+            <div className="w-24 h-24 rounded-full border-2 border-violet-500/20 flex items-center justify-center">
+              {/* Spinning ring */}
+              <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-violet-500 animate-spin" />
+              {/* Icon */}
+              <span className="text-3xl">{currentStep.icon}</span>
             </div>
-            <div className="flex items-center gap-2 text-sm text-green-600">
-              <CheckCircle className="w-4 h-4" />
-              <span>Context retrieved</span>
-            </div>
-            {AGENTS.map(({ key, label }) => {
-              const status = agentStatuses[key];
+          </motion.div>
+        )}
+
+        {status === 'done' && (
+          <motion.div
+            key="done"
+            initial={{ scale: 0.5, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="w-24 h-24 rounded-full bg-green-500/20 border-2 border-green-500 flex items-center justify-center"
+          >
+            <span className="text-4xl">✓</span>
+          </motion.div>
+        )}
+
+        {status === 'failed' && (
+          <motion.div
+            key="failed"
+            initial={{ scale: 0.5, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="w-24 h-24 rounded-full bg-red-500/20 border-2 border-red-500 flex items-center justify-center"
+          >
+            <span className="text-4xl">✗</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Title ── */}
+      <div className="text-center">
+        <AnimatePresence mode="wait">
+          <motion.h2
+            key={status}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="text-xl font-semibold text-white"
+          >
+            {status === 'running' ? 'Generating Content'  :
+             status === 'done'    ? 'Content Ready!'       :
+             'Generation Failed'}
+          </motion.h2>
+        </AnimatePresence>
+
+        <AnimatePresence mode="wait">
+          <motion.p
+            key={currentStep.label}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="text-sm text-gray-500 mt-2"
+          >
+            {status === 'running' ? currentStep.label :
+             status === 'done'    ? 'Redirecting to your content...' :
+             failReason}
+          </motion.p>
+        </AnimatePresence>
+      </div>
+
+      {/* ── Progress Bar ── */}
+      {status === 'running' && (
+        <div className="w-full max-w-sm space-y-3">
+          <div className="flex justify-between text-xs">
+            <span className="text-gray-600">Progress</span>
+            <span className="text-violet-400 font-medium">{progress}%</span>
+          </div>
+
+          <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+            <motion.div
+              className="h-full bg-gradient-to-r from-violet-600 to-violet-400 rounded-full"
+              animate={{ width: `${progress}%` }}
+              transition={{ duration: 0.3, ease: 'easeOut' }}
+            />
+          </div>
+
+          {/* Step pills */}
+          <div className="flex flex-wrap gap-2 justify-center mt-4">
+            {PROGRESS_STEPS.map((s, i) => {
+              const done    = progress >= s.max;
+              const current = progress >= s.min && progress < s.max;
               return (
-                <div key={key} className="flex items-center gap-2 text-sm">
-                  {status === 'done' && <CheckCircle className="w-4 h-4 text-green-600" />}
-                  {status === 'running' && <Loader2 className="w-4 h-4 text-primary animate-spin" />}
-                  {status === 'pending' && <Circle className="w-4 h-4 text-muted-foreground" />}
-                  {status === 'failed' && <XCircle className="w-4 h-4 text-destructive" />}
-                  <span className={status === 'running' ? 'text-foreground font-medium' : status === 'done' ? 'text-green-600' : 'text-muted-foreground'}>
-                    {label}
-                  </span>
+                <div
+                  key={i}
+                  className={`
+                    flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs
+                    border transition-all duration-300
+                    ${done
+                      ? 'bg-violet-500/20 border-violet-500/30 text-violet-300'
+                      : current
+                      ? 'bg-violet-600/30 border-violet-500/50 text-white'
+                      : 'bg-white/3 border-white/8 text-gray-600'
+                    }
+                  `}
+                >
+                  <span>{s.icon}</span>
+                  <span>{s.label}</span>
+                  {done && <span className="text-violet-400">✓</span>}
                 </div>
               );
             })}
           </div>
-
-          {/* Progress bar */}
-          <div className="space-y-2">
-            <Progress value={progress} />
-            <div className="flex justify-between text-xs text-muted-foreground">
-              <span>{progress}%</span>
-              {!failed && progress < 100 && <span>~{estimatedSec}s remaining</span>}
-            </div>
-          </div>
-
-          {failed && (
-            <div className="text-center pt-2">
-              <p className="text-destructive text-sm mb-3">Generation failed. Please try again.</p>
-              <Button variant="outline" size="sm" onClick={() => router.push('/content/new')}>Try Again</Button>
-            </div>
-          )}
         </div>
-      </div>
+      )}
+
+      {/* ── Failed Actions ── */}
+      {status === 'failed' && (
+        <div className="flex gap-3">
+          <button
+            onClick={() => router.back()}
+            className="px-5 py-2.5 text-sm text-gray-400 border border-white/10 rounded-xl hover:border-white/20 transition-all"
+          >
+            ← Go Back
+          </button>
+          <button
+            onClick={() => router.replace(`/content/${id}`)}
+            className="px-5 py-2.5 text-sm text-white bg-violet-600 hover:bg-violet-700 rounded-xl transition-all"
+          >
+            View Details
+          </button>
+        </div>
+      )}
     </div>
   );
 }

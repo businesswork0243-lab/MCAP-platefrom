@@ -1,76 +1,139 @@
 'use client';
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+
+import { useState, useEffect } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { motion } from 'framer-motion';
 import { useAuthStore } from '@/store/auth';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { tokenManager } from '@/lib/api';
 
 export default function LoginPage() {
-  const router = useRouter();
-  const { login, isLoading } = useAuthStore();
-  const [email, setEmail] = useState('');
+  const router       = useRouter();
+  const searchParams = useSearchParams();
+  const returnTo     = searchParams.get('returnTo') ?? '/dashboard';
+  const reason       = searchParams.get('reason');
+
+  const login     = useAuthStore(s => s.login);
+  const isLoading = useAuthStore(s => s.isLoading);
+  const user      = useAuthStore(s => s.user);
+
+  const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [error,    setError]    = useState('');
+  const [showPwd,  setShowPwd]  = useState(false);
+
+  // Already logged in
+  useEffect(() => {
+    if (user && tokenManager.get()) {
+      router.replace(returnTo);
+    }
+  }, [user, router, returnTo]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+
     try {
       await login(email, password);
-      router.push('/dashboard');
-    } catch (err: any) {
-      setError(err?.response?.data?.error || 'Invalid credentials');
+      router.replace(returnTo);
+    } catch (err) {
+      // Store already extracts the message
+      setError(err instanceof Error ? err.message : 'Login failed');
     }
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Welcome back</CardTitle>
-        <CardDescription>Sign in to your MCAP account</CardDescription>
-      </CardHeader>
-      <form onSubmit={handleSubmit}>
-        <CardContent className="space-y-4">
-          {error && (
-            <div className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-md">
-              {error}
-            </div>
-          )}
-          <div className="space-y-1">
-            <label className="text-sm font-medium">Email</label>
-            <Input
-              type="email"
-              placeholder="you@company.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-          </div>
-          <div className="space-y-1">
-            <label className="text-sm font-medium">Password</label>
-            <Input
-              type="password"
-              placeholder="••••••••"
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2 }}
+      className="w-full max-w-sm"
+    >
+      {/* Logo */}
+      <div className="text-center mb-8">
+        <div className="w-12 h-12 bg-violet-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+          <span className="text-white text-xl font-bold">M</span>
+        </div>
+        <h1 className="text-2xl font-bold text-white">Welcome back</h1>
+        <p className="text-gray-500 text-sm mt-1">Sign in to M-CAP</p>
+      </div>
+
+      {/* Session expired notice */}
+      {reason === 'session_expired' && (
+        <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-sm text-amber-300 text-center">
+          Your session expired. Please sign in again.
+        </div>
+      )}
+
+      {/* Form */}
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {error && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-sm text-red-400 text-center"
+          >
+            {error}
+          </motion.div>
+        )}
+
+        <div className="space-y-1.5">
+          <label className="block text-sm font-medium text-gray-300">Email</label>
+          <input
+            type="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            placeholder="you@company.com"
+            required
+            autoComplete="email"
+            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-gray-600 focus:border-violet-500/50 outline-none transition-colors text-sm"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="block text-sm font-medium text-gray-300">Password</label>
+          <div className="relative">
+            <input
+              type={showPwd ? 'text' : 'password'}
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="••••••••"
               required
+              autoComplete="current-password"
+              className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-gray-600 focus:border-violet-500/50 outline-none transition-colors text-sm pr-12"
             />
+            <button
+              type="button"
+              onClick={() => setShowPwd(!showPwd)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-400 transition-colors text-sm"
+            >
+              {showPwd ? '🙈' : '👁'}
+            </button>
           </div>
-        </CardContent>
-        <CardFooter className="flex flex-col gap-3">
-          <Button type="submit" className="w-full" loading={isLoading}>
-            Sign In
-          </Button>
-          <p className="text-sm text-muted-foreground text-center">
-            Don&apos;t have an account?{' '}
-            <Link href="/register" className="text-primary hover:underline font-medium">
-              Sign up
-            </Link>
-          </p>
-        </CardFooter>
+        </div>
+
+        <button
+          type="submit"
+          disabled={isLoading || !email || !password}
+          className="w-full py-3 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium rounded-xl transition-all flex items-center justify-center gap-2"
+        >
+          {isLoading ? (
+            <>
+              <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              Signing in...
+            </>
+          ) : (
+            'Sign In'
+          )}
+        </button>
       </form>
-    </Card>
+
+      <p className="text-center text-sm text-gray-600 mt-6">
+        Don&apos;t have an account?{' '}
+        <Link href="/register" className="text-violet-400 hover:text-violet-300 font-medium transition-colors">
+          Sign up free
+        </Link>
+      </p>
+    </motion.div>
   );
 }

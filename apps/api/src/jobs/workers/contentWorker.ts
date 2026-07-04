@@ -24,15 +24,29 @@ interface ContentJobData {
   createdBy: string;
 }
 
-async function updateStatus(requestId: string, status: string, metadata?: object) {
+import { logger } from '../../lib/logger';
+
+async function updateStatus(
+  requestId: string,
+  status:    string,
+  extra:     Record<string, unknown> = {}
+): Promise<void> {
   await pool.query(
-    `UPDATE content_requests SET status = $1, metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = NOW() WHERE id = $3`,
-    [status, JSON.stringify(metadata ?? {}), requestId]
+    `UPDATE content_requests
+     SET status = $1, updated_at = NOW()
+     WHERE id = $2`,
+    [status, requestId]
   );
+  logger.info(`Request ${requestId} → ${status}`, extra);
 }
 
-async function processContentJob(job: Job<ContentJobData>) {
+async function processContentJob(job: Job<ContentJobData>): Promise<void> {
   const { requestId, topic, context, brandProfileId, organizationId } = job.data;
+
+  // Helper with requestId baked in
+  const progress = async (pct: number, step?: string) => {
+    await job.updateProgress({ percentage: pct, requestId, step });
+  };
 
   // Fetch full content request from DB
   const reqResult = await pool.query('SELECT * FROM content_requests WHERE id = $1', [requestId]);
@@ -50,11 +64,14 @@ async function processContentJob(job: Job<ContentJobData>) {
   }
 
   await updateStatus(requestId, 'running');
-  await job.updateProgress(10);
+  await progress(5,  'Fetching request data');
 
   const platforms: string[] = Array.isArray(req.platforms)
     ? req.platforms
     : JSON.parse(req.platforms || `["${job.data.targetPlatform}"]`);
+
+  await progress(10, 'Loading brand profile');
+  await progress(15, 'Loading ICP profile');
 
   const pipelinePayload = {
     topic,
@@ -89,6 +106,8 @@ async function processContentJob(job: Job<ContentJobData>) {
     specialInstructions: req.special_instructions || '',
   };
 
+  await progress(20, 'Building AI payload');
+
   let pipelineRes: any;
   try {
     pipelineRes = await axios.post(`${AI_ENGINE_URL}/pipeline/run`, pipelinePayload, {
@@ -103,7 +122,7 @@ async function processContentJob(job: Job<ContentJobData>) {
     throw new Error(detail);
   }
 
-  await job.updateProgress(90);
+  await progress(85, 'Pipeline complete');
 
   const { artifacts, totalTokensUsed } = pipelineRes.data;
 
@@ -129,12 +148,13 @@ async function processContentJob(job: Job<ContentJobData>) {
   );
 
   const needsApproval = req.requires_approval;
+  await progress(95, 'Saving artifacts');
   await updateStatus(requestId, needsApproval ? 'awaiting_approval' : 'ready', {
     totalTokensUsed,
     artifactCount: artifacts?.length ?? 0,
   });
 
-  await job.updateProgress(100);
+  await progress(100, 'Done');
 }
 
 export function startContentWorker() {

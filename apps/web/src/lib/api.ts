@@ -34,6 +34,24 @@ export const tokenManager = {
   },
 };
 
+// ── Token Refresh Queue ───────────────────────────────────────────────────────
+let isRefreshing = false;
+let failedQueue: Array<{
+  resolve: (token: string) => void;
+  reject:  (err: unknown) => void;
+}> = [];
+
+function processQueue(error: unknown, token: string | null = null) {
+  failedQueue.forEach(({ resolve, reject }) => {
+    if (error) {
+      reject(error);
+    } else {
+      resolve(token!);
+    }
+  });
+  failedQueue = [];
+}
+
 // ── Axios Instance Factory ────────────────────────────────────────────────────
 
 function createApiInstance(timeout: number = TIMEOUT_MS): AxiosInstance {
@@ -69,21 +87,66 @@ function createApiInstance(timeout: number = TIMEOUT_MS): AxiosInstance {
     async (error: AxiosError) => {
       const status = error.response?.status;
       const originalRequest = error.config as InternalAxiosRequestConfig & { 
-        _retryCount?: number 
+        _retryCount?: number;
+        _retry?:      boolean;
       };
+      const apiError = error.response?.data as { error?: string; code?: string; message?: string };
 
-      // 401 - Token expired ya invalid
-      if (status === 401) {
+      // ── 401 Token Expired — Auto Refresh ─────────────────────────────────────
+      if (
+        status === 401 &&
+        apiError?.code === 'TOKEN_EXPIRED' &&
+        !originalRequest._retry
+      ) {
+        if (isRefreshing) {
+          // Queue this request until refresh completes
+          return new Promise((resolve, reject) => {
+            failedQueue.push({ resolve, reject });
+          }).then(token => {
+            originalRequest.headers.Authorization = `Bearer ${token}`;
+            return instance(originalRequest);
+          }).catch(err => Promise.reject(err));
+        }
+
+        originalRequest._retry = true;
+        isRefreshing = true;
+
+        try {
+          // Import here to avoid circular dep
+          const { useAuthStore } = await import('@/store/auth');
+          const refreshed = await useAuthStore.getState().refreshToken();
+
+          if (refreshed) {
+            const newToken = tokenManager.get()!;
+            processQueue(null, newToken);
+            originalRequest.headers.Authorization = `Bearer ${newToken}`;
+            return instance(originalRequest);
+          } else {
+            processQueue(new Error('Refresh failed'));
+            if (typeof window !== 'undefined') {
+              window.location.href = '/login?reason=session_expired';
+            }
+            return Promise.reject(error);
+          }
+        } catch (refreshError) {
+          processQueue(refreshError);
+          return Promise.reject(refreshError);
+        } finally {
+          isRefreshing = false;
+        }
+      }
+
+      // ── Regular 401 — Not expired, just invalid ───────────────────────────────
+      if (status === 401 && !originalRequest._retry) {
         tokenManager.clear();
         if (typeof window !== 'undefined') {
-          // Current path save karo redirect ke baad
           const returnTo = window.location.pathname;
           window.location.href = `/login?returnTo=${encodeURIComponent(returnTo)}`;
         }
         return Promise.reject(error);
       }
 
-      // 429 - Rate limit
+      // ── 429 - Rate limit
       if (status === 429) {
         const retryAfter = error.response?.headers['retry-after'];
         return Promise.reject(
@@ -91,7 +154,7 @@ function createApiInstance(timeout: number = TIMEOUT_MS): AxiosInstance {
         );
       }
 
-      // 5xx - Server error, retry karo (max 2 baar)
+      // ── 5xx - Server error, retry karo (max 2 baar)
       if (status && status >= 500 && status < 600) {
         originalRequest._retryCount = originalRequest._retryCount || 0;
         
@@ -111,7 +174,6 @@ function createApiInstance(timeout: number = TIMEOUT_MS): AxiosInstance {
       }
 
       // API error message extract karo
-      const apiError = error.response.data as { error?: string; message?: string };
       const message = apiError?.error || apiError?.message || 'Something went wrong';
       
       return Promise.reject(new Error(message));

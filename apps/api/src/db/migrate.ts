@@ -10,14 +10,21 @@ CREATE TABLE IF NOT EXISTS organizations (
 );
 
 CREATE TABLE IF NOT EXISTS users (
-  id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  organization_id UUID        REFERENCES organizations(id) ON DELETE CASCADE,
-  email           TEXT        UNIQUE NOT NULL,
-  name            TEXT        NOT NULL,
-  role            TEXT        NOT NULL DEFAULT 'viewer',
-  password_hash   TEXT        NOT NULL,
-  created_at      TIMESTAMPTZ DEFAULT NOW()
+  id                       UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  organization_id          UUID        REFERENCES organizations(id) ON DELETE CASCADE,
+  email                    TEXT        UNIQUE NOT NULL,
+  name                     TEXT        NOT NULL,
+  role                     TEXT        NOT NULL DEFAULT 'viewer',
+  password_hash            TEXT,
+  status                   TEXT        DEFAULT 'active',
+  last_login_at            TIMESTAMPTZ,
+  refresh_token            TEXT,
+  refresh_token_expires_at TIMESTAMPTZ,
+  created_at               TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_organizations_name ON organizations(name);
+CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 
 CREATE TABLE IF NOT EXISTS brand_profiles (
   id                   UUID        PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -1,97 +1,256 @@
 """Agent 3 — Brand Optimizer: injects organizational identity into content."""
 from services.llm import complete
+import logging
+
+log = logging.getLogger("ai-engine.brand_optimizer")
 
 SYSTEM = """You are a brand strategist and editorial specialist.
-Your task is to align content with a specific brand's voice, tone, and guidelines.
-Preserve all factual information and strategic meaning. Only modify how things are expressed — not what is said.
-Never add unverified claims or fabricated statistics."""
+Your task: align content with a specific brand's voice, tone, values, and guidelines.
+Preserve all factual information and strategic meaning.
+Only modify HOW things are expressed — never WHAT is said.
+Never add unverified claims, statistics, or fabricated details."""
+
+# ─── Prompt Template ──────────────────────────────────────────────────────────
 
 USER_TEMPLATE = """Apply the following brand guidelines to this content.
 
 CONTENT TO BRAND-ALIGN:
 {content}
 
-BRAND PROFILE:
-- Brand Name: {brand_name}
-- Mission: {mission}
-- Preferred Tone: {tone_description}
-- Formality Level: {formality}/10
-- Technical Depth: {technical_depth}/10
-- Confidence Level: {confidence}/10
-- Emotional Intensity: {emotional_intensity}/10
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BRAND IDENTITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Brand Name: {brand_name}
+Mission: {mission}
+Life Purpose: {life_purpose}
 
-TERMINOLOGY RULES:
-Preferred terms to use: {preferred_terms}
-Banned phrases to avoid and replace: {banned_phrases}
+TONE PROFILE:
+{tone_description}
+  • Formality:      {formality}/10  ({formality_label})
+  • Confidence:     {confidence}/10 ({confidence_label})
+  • Technical Depth:{technical}/10  ({technical_label})
+  • Enthusiasm:     {enthusiasm}/10
+  • Empathy:        {empathy}/10
 
-KEY MESSAGES to reinforce (weave in naturally where relevant):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BRAND BELIEFS & CHARACTER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{beliefs_block}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VOCABULARY RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Preferred Terms (use these): {preferred_terms}
+Banned Phrases (NEVER use, replace with natural alternatives): {banned_phrases}
+
+KEY MESSAGES (weave in naturally where relevant — don't force):
 {key_messages}
 
+COMPLIANCE NOTES:
+{compliance_notes}
+
+{document_context}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 BRAND ALIGNMENT RULES:
-1. Replace ALL banned phrases with natural, brand-appropriate alternatives
-2. Use preferred terminology consistently throughout
-3. Adjust sentence structure to match the formality and confidence levels
-4. Reinforce key messages without making them sound forced
-5. Keep all facts and data points exactly as they are
-6. Do NOT add any information that wasn't in the original
+1. Replace ALL banned phrases with brand-appropriate alternatives
+2. Use preferred terminology consistently
+3. Adjust sentence structure to match formality/confidence levels
+4. Reinforce key messages without sounding forced
+5. Reflect brand beliefs — content should feel like it comes from a brand that
+   stands for {stands_for_summary} and opposes {stands_against_summary}
+6. Keep ALL facts, data, and statistics exactly as they are
+7. Do NOT add any information not in the original
 
-OUTPUT: Write only the brand-aligned content. No commentary."""
+OUTPUT: Write only the brand-aligned content. No commentary, no labels.
+"""
 
 
-def _tone_description(profile: dict) -> str:
-    formality = profile.get("formality", 5)
-    confidence = profile.get("confidence", 5)
-    emotional = profile.get("emotionalIntensity", 5)
-    technical = profile.get("technicalDepth", 5)
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _tone_label(value: float, low: str, mid: str, high: str) -> str:
+    if value <= 3:   return low
+    if value <= 6:   return mid
+    return high
+
+
+def _build_tone_description(tone: dict) -> str:
+    """Build a human-readable tone description from settings."""
+    formality   = tone.get("formality", 5)
+    confidence  = tone.get("confidence", 5)
+    technical   = tone.get("technical",  5)  # note: 'technical' not 'technicalDepth'
+    humor       = tone.get("humor", 3)
+    storytelling= tone.get("storytelling", 5)
 
     parts = []
-    if formality >= 7:
-        parts.append("formal and professional")
-    elif formality <= 4:
-        parts.append("conversational and approachable")
-    else:
-        parts.append("semi-formal")
 
-    if confidence >= 7:
-        parts.append("authoritative and assertive")
-    elif confidence <= 4:
-        parts.append("measured and considerate")
+    parts.append(_tone_label(
+        formality,
+        "Conversational and approachable",
+        "Semi-formal, balanced",
+        "Formal and professional",
+    ))
 
-    if emotional <= 3:
-        parts.append("analytical with minimal emotion")
-    elif emotional >= 7:
-        parts.append("warm and emotionally engaging")
+    parts.append(_tone_label(
+        confidence,
+        "Measured, considerate, open",
+        "Balanced confidence",
+        "Authoritative, assertive, decisive",
+    ))
 
     if technical >= 7:
-        parts.append("technically deep")
+        parts.append("Technically deep — assume expert audience")
     elif technical <= 3:
-        parts.append("accessible and jargon-free")
+        parts.append("Accessible — minimal jargon, explain concepts")
 
-    return ", ".join(parts) if parts else "professional"
+    if humor >= 6:
+        parts.append("Light humor and wit welcome")
 
+    if storytelling >= 7:
+        parts.append("Narrative and story-driven where possible")
+
+    return "Tone: " + ". ".join(parts) + "."
+
+
+def _build_beliefs_block(brand: dict) -> str:
+    """Build the values/beliefs section of the prompt."""
+    sections = []
+
+    if likes := brand.get("likes"):
+        sections.append(f"Brand LIKES & Champions:\n" +
+                        "\n".join(f"  + {item}" for item in likes[:8]))
+
+    if hates := brand.get("hates"):
+        sections.append(f"Brand HATES (strong opposition — avoid these associations):\n" +
+                        "\n".join(f"  ✗ {item}" for item in hates[:5]))
+
+    if dislikes := brand.get("dislikes"):
+        sections.append(f"Brand Dislikes (mild — avoid where possible):\n" +
+                        "\n".join(f"  ~ {item}" for item in dislikes[:5]))
+
+    if stands_for := brand.get("stands_for"):
+        sections.append(f"Brand STANDS FOR:\n" +
+                        "\n".join(f"  ✓ {item}" for item in stands_for[:6]))
+
+    if stands_against := brand.get("stands_against"):
+        sections.append(f"Brand STANDS AGAINST:\n" +
+                        "\n".join(f"  ✗ {item}" for item in stands_against[:6]))
+
+    if values := brand.get("core_values"):
+        sections.append(f"Core Values:\n  {', '.join(values[:6])}")
+
+    if motivations := brand.get("core_motivations"):
+        sections.append(f"Core Motivations:\n  {', '.join(motivations[:5])}")
+
+    return "\n\n".join(sections) if sections else "No specific beliefs defined."
+
+
+def _summarize_list(items: list, limit: int = 3) -> str:
+    if not items:
+        return "not specified"
+    return ", ".join(str(i) for i in items[:limit])
+
+
+# ─── Agent Entry Point ────────────────────────────────────────────────────────
 
 async def run(content: str, brand_profile: dict | None) -> dict:
+    """Apply brand voice and guidelines to content."""
+
+    # No brand profile — return as-is
     if not brand_profile:
+        log.debug("No brand profile provided — skipping brand optimization")
         return {"content": content, "tokensUsed": 0, "agent": "brand_optimizer"}
 
-    tone_settings = brand_profile.get("tone_settings") or brand_profile.get("tone") or {}
-    preferred_terms = brand_profile.get("preferred_terms") or []
-    banned_phrases = brand_profile.get("banned_phrases") or []
-    key_messages = brand_profile.get("key_messages") or []
+    # ── Extract fields ────────────────────────────────────────────────────────
+    tone_settings   = (
+        brand_profile.get("tone_settings") or
+        brand_profile.get("tone") or
+        {}
+    )
+
+    preferred_terms  = brand_profile.get("preferred_terms")  or []
+    banned_phrases   = brand_profile.get("banned_phrases")   or []
+    key_messages     = brand_profile.get("key_messages")     or []
+    compliance_notes = brand_profile.get("compliance_notes") or "None"
+    doc_context      = brand_profile.get("document_context") or ""
+
+    # Tone dimensions — handle both naming conventions
+    formality   = tone_settings.get("formality",   5)
+    confidence  = tone_settings.get("confidence",  5)
+    technical   = tone_settings.get("technical",   tone_settings.get("technicalDepth", 5))
+    enthusiasm  = tone_settings.get("enthusiasm",  5)
+    empathy     = tone_settings.get("empathy",     5)
+
+    # Beliefs
+    stands_for      = brand_profile.get("stands_for")      or []
+    stands_against  = brand_profile.get("stands_against")  or []
+
+    # Document context block (from uploaded brand docs)
+    doc_block = ""
+    if doc_context:
+        # Limit to avoid prompt overflow
+        trimmed = doc_context[:1500]
+        doc_block = f"""BRAND DOCUMENT CONTEXT (from uploaded guidelines):
+{trimmed}
+Use this to inform voice and style decisions."""
 
     user_prompt = USER_TEMPLATE.format(
         content=content,
-        brand_name=brand_profile.get("name", ""),
-        mission=brand_profile.get("mission_statement") or brand_profile.get("missionStatement") or "Not specified",
-        tone_description=_tone_description(tone_settings),
-        formality=tone_settings.get("formality", 5),
-        technical_depth=tone_settings.get("technicalDepth", 5),
-        confidence=tone_settings.get("confidence", 5),
-        emotional_intensity=tone_settings.get("emotionalIntensity", 5),
-        preferred_terms=", ".join(preferred_terms) if preferred_terms else "None specified",
-        banned_phrases=", ".join(banned_phrases) if banned_phrases else "None specified",
-        key_messages="\n".join(f"• {m}" for m in key_messages) if key_messages else "None specified",
+        brand_name=brand_profile.get("name", "Unknown Brand"),
+        mission=(
+            brand_profile.get("mission_statement") or
+            brand_profile.get("missionStatement") or
+            brand_profile.get("mission") or
+            "Not specified"
+        ),
+        life_purpose=brand_profile.get("life_purpose") or "Not specified",
+        tone_description=_build_tone_description(tone_settings),
+        formality=formality,
+        formality_label=_tone_label(formality, "Casual", "Semi-formal", "Formal"),
+        confidence=confidence,
+        confidence_label=_tone_label(confidence, "Gentle", "Balanced", "Authoritative"),
+        technical=technical,
+        technical_label=_tone_label(technical, "Simple", "Moderate", "Deep"),
+        enthusiasm=enthusiasm,
+        empathy=empathy,
+        beliefs_block=_build_beliefs_block(brand_profile),
+        stands_for_summary=_summarize_list(stands_for),
+        stands_against_summary=_summarize_list(stands_against),
+        preferred_terms=(
+            ", ".join(preferred_terms) if preferred_terms
+            else "None specified"
+        ),
+        banned_phrases=(
+            ", ".join(banned_phrases) if banned_phrases
+            else "None specified"
+        ),
+        key_messages=(
+            "\n".join(f"• {m}" for m in key_messages) if key_messages
+            else "None specified"
+        ),
+        compliance_notes=compliance,
+        document_context=doc_block,
     )
 
-    result, tokens = await complete(SYSTEM, user_prompt, temperature=0.5, max_tokens=2000)
-    return {"content": result, "tokensUsed": tokens, "agent": "brand_optimizer"}
+    # Estimate max tokens based on content length
+    content_words = len(content.split())
+    max_tok = min(int(content_words * 1.4) + 500, 4096)
+
+    log.info(
+        "Brand optimizer | brand=%s | content_words=%d | banned=%d",
+        brand_profile.get("name", "?"),
+        content_words,
+        len(banned_phrases),
+    )
+
+    result, tokens = await complete(
+        SYSTEM,
+        user_prompt,
+        temperature=0.5,
+        max_tokens=max_tok,
+    )
+
+    return {
+        "content":    result,
+        "tokensUsed": tokens,
+        "agent":      "brand_optimizer",
+    }

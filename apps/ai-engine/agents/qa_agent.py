@@ -1,10 +1,10 @@
 """Agent 5 — Editorial QA: validates quality, brand adherence, and content standards.
 
-Scoring weights per spec (Section 17 — Content Scoring Framework):
-  Readability:           15%
+Scoring weights per spec:
   Brand adherence:       20%
-  Structure:             10%
+  Readability:           15%
   Platform optimization: 15%
+  Structure:             10%
   Humanization:          10%
   Consistency:           10%
   Clarity:               10%
@@ -12,72 +12,101 @@ Scoring weights per spec (Section 17 — Content Scoring Framework):
   CTA alignment:          5%
 """
 import json
+import re
+import logging
+from collections import Counter
 from services.llm import complete
 
-SYSTEM = """You are a senior editorial QA specialist. Analyze content and return a structured JSON assessment.
-Be precise, objective, and consistent. Flag real issues only — not stylistic preferences."""
+log = logging.getLogger("ai-engine.qa")
 
-USER_TEMPLATE = """Perform a comprehensive editorial QA review of the following content.
+SYSTEM = """You are a senior editorial QA specialist. Analyze content and return a STRICTLY VALID JSON assessment.
+Be precise, objective, and consistent. Flag concrete, fixable issues only.
+Do not invent flags. RESPOND WITH JSON ONLY — no other text before or after."""
+
+# ─── Prompt Template ──────────────────────────────────────────────────────────
+
+USER_TEMPLATE = """Perform a comprehensive editorial QA review of this content.
 
 CONTENT:
 {content}
 
-BRAND PROFILE:
-Brand: {brand_name}
-Banned phrases: {banned_phrases}
-Key messages: {key_messages}
+CONTEXT:
+- Brand: {brand_name}
+- Brand Banned Phrases: {banned_phrases}
+- Key Messages to Check: {key_messages}
+- Compliance Notes: {compliance_notes}
+{seo_block}
 
-EVALUATE EACH DIMENSION (score 0-100):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SCORING DIMENSIONS (rate 0-100 each):
 
-1. readabilityScore     — sentence variety, flow, clarity, paragraph structure, accessibility
-2. brandScore           — brand voice alignment, terminology consistency, banned phrase compliance
-3. structureScore       — logical flow, argument coherence, section completeness, editorial integrity
-4. platformScore        — appropriate length, formatting conventions, audience fit for the platform
-5. humanizationScore    — naturalness, absence of AI clichés, authentic voice, organic transitions
-6. consistencyScore     — consistent tone, tense, perspective, terminology throughout
-7. clarityScore         — precise language, unambiguous statements, no vague filler
-8. engagementScore      — hook quality, reader retention, compelling narrative
-9. ctaScore             — CTA relevance, placement, and persuasiveness (score 50 if no CTA)
+1. readabilityScore    — sentence variety, flow, paragraph structure, accessibility
+2. brandScore         — brand voice, terminology, banned phrase compliance
+3. structureScore     — logical flow, argument coherence, section completeness
+4. platformScore      — appropriate length, formatting, audience fit
+5. humanizationScore  — naturalness, absence of AI clichés, authentic voice
+6. consistencyScore   — consistent tone, tense, perspective, terminology
+7. clarityScore       — precise language, no vague filler, unambiguous claims
+8. engagementScore    — hook quality, reader retention, compelling narrative
+9. ctaScore           — CTA relevance and placement (score 50 if no CTA present)
 
-IDENTIFY FLAGS (concrete issues to fix):
-- Banned phrases still present
-- Repeated words/phrases (same significant word 4+ times)
-- Sentences over 35 words
-- Vague unsupported claims
-- Structural gaps in the chosen writing flow
-- Formatting issues
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FLAGS (only concrete, fixable issues):
+- banned phrases still present
+- significant word repeated 5+ times unnecessarily
+- sentences exceeding 35 words (count them)
+- unsupported vague claims ("everyone knows", "studies show" without citation)
+- structural gaps
+- formatting issues
 
-RESPOND ONLY WITH THIS JSON (no other text):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RESPOND WITH ONLY THIS JSON (no other text):
 {{
-  "readabilityScore": <0-100>,
-  "brandScore": <0-100>,
-  "structureScore": <0-100>,
-  "platformScore": <0-100>,
+  "readabilityScore":  <0-100>,
+  "brandScore":        <0-100>,
+  "structureScore":    <0-100>,
+  "platformScore":     <0-100>,
   "humanizationScore": <0-100>,
-  "consistencyScore": <0-100>,
-  "clarityScore": <0-100>,
-  "engagementScore": <0-100>,
-  "ctaScore": <0-100>,
-  "flags": ["flag1", "flag2"],
-  "suggestions": ["suggestion1", "suggestion2"],
-  "summary": "One sentence overall assessment"
+  "consistencyScore":  <0-100>,
+  "clarityScore":      <0-100>,
+  "engagementScore":   <0-100>,
+  "ctaScore":          <0-100>,
+  "flags":             ["specific issue 1", "specific issue 2"],
+  "suggestions":       ["actionable suggestion 1", "suggestion 2"],
+  "summary":           "One sentence overall assessment"
 }}"""
 
-# Spec-defined weights (Section 17)
+# ─── Scoring Config ───────────────────────────────────────────────────────────
+
 SCORE_WEIGHTS = {
-    "readabilityScore":     0.15,
-    "brandScore":           0.20,
-    "structureScore":       0.10,
-    "platformScore":        0.15,
-    "humanizationScore":    0.10,
-    "consistencyScore":     0.10,
-    "clarityScore":         0.10,
-    "engagementScore":      0.05,
-    "ctaScore":             0.05,
+    "brandScore":        0.20,
+    "readabilityScore":  0.15,
+    "platformScore":     0.15,
+    "structureScore":    0.10,
+    "humanizationScore": 0.10,
+    "consistencyScore":  0.10,
+    "clarityScore":      0.10,
+    "engagementScore":   0.05,
+    "ctaScore":          0.05,
 }
 
-PASS_THRESHOLD = 70
+PASS_THRESHOLD     = 70   # Overall score
+CRITICAL_MIN_SCORE = 50   # Any dimension below this = flag
 
+# Flags that are "warnings" (don't fail the piece)
+WARNING_FLAG_PATTERNS = [
+    "overused_word",
+    "sentence_length",
+]
+
+# Flags that are "critical" (can fail the piece)
+CRITICAL_FLAG_PATTERNS = [
+    "banned_phrase",
+    "content_too_short",
+    "structural_gap",
+]
+
+# ─── Scoring ──────────────────────────────────────────────────────────────────
 
 def _compute_weighted_score(scores: dict) -> int:
     total = sum(
@@ -87,78 +116,224 @@ def _compute_weighted_score(scores: dict) -> int:
     return round(total)
 
 
-def _local_flags(content: str, banned_phrases: list[str]) -> list[str]:
-    flags = []
+def _count_critical_flags(flags: list[str]) -> int:
+    """Count only critical flags (not warnings)."""
+    count = 0
+    for flag in flags:
+        if any(pattern in flag.lower() for pattern in CRITICAL_FLAG_PATTERNS):
+            count += 1
+    return count
 
+
+def _determine_pass(overall: int, scores: dict, flags: list[str]) -> bool:
+    """
+    Pass if:
+    - Overall >= 70
+    - No critical flags (banned phrases, structural gaps, etc.)
+    - No dimension critically low (< 50)
+    Warnings (overused words, long sentences) do NOT fail the piece.
+    """
+    if overall < PASS_THRESHOLD:
+        return False
+
+    # Critical flags
+    if _count_critical_flags(flags) > 0:
+        return False
+
+    # Any dimension critically low
+    for key in SCORE_WEIGHTS:
+        if scores.get(key, 70) < CRITICAL_MIN_SCORE:
+            return False
+
+    return True
+
+
+# ─── Local Analysis (deterministic, no LLM) ──────────────────────────────────
+
+def _local_analysis(
+    content:        str,
+    banned_phrases: list[str],
+    seo_keyword:    str | None = None,
+) -> list[str]:
+    """Fast deterministic checks — no LLM needed."""
+    flags = []
+    words = content.lower().split()
+
+    # 1. Banned phrase check
+    content_lower = content.lower()
     for phrase in banned_phrases:
-        if phrase.lower() in content.lower():
+        if phrase.lower() in content_lower:
             flags.append(f'banned_phrase: "{phrase}"')
 
-    from collections import Counter
-    words = content.lower().split()
-    word_counts = Counter(w.strip(".,!?;:\"'") for w in words if len(w) > 5)
-    for word, count in word_counts.items():
+    # 2. Overused significant words
+    significant = [
+        w.strip(".,!?;:\"'()[]")
+        for w in words
+        if len(w) > 5 and w.isalpha()
+    ]
+    word_counts = Counter(significant)
+    for word, count in word_counts.most_common(10):
         if count >= 5:
+            # Skip if it's the topic keyword
             flags.append(f'overused_word: "{word}" ({count}×)')
 
-    sentences = [s.strip() for s in content.replace("!", ".").replace("?", ".").split(".") if s.strip()]
-    long_count = sum(1 for s in sentences if len(s.split()) > 35)
-    if long_count >= 2:
-        flags.append(f"sentences_too_long ({long_count} sentences over 35 words)")
+    # 3. Very long sentences
+    sentences = re.split(r'[.!?]+', content)
+    long_sents = [s for s in sentences if len(s.split()) > 35]
+    if len(long_sents) >= 2:
+        flags.append(f"long_sentences: {len(long_sents)} sentences exceed 35 words")
 
-    if len(content.split()) < 50:
-        flags.append("content_too_short")
+    # 4. Too short
+    word_count = len(words)
+    if word_count < 50:
+        flags.append(f"content_too_short: only {word_count} words")
+
+    # 5. SEO check
+    if seo_keyword and seo_keyword.lower() not in content_lower:
+        flags.append(f'seo_keyword_missing: "{seo_keyword}" not found in content')
+
+    # 6. Common vague claims
+    vague_patterns = [
+        r'\bstudies show\b',
+        r'\beveryone knows\b',
+        r'\bit is known\b',
+        r'\bresearch suggests\b(?! that)',  # allow "research suggests that X" with specific claim
+    ]
+    for pattern in vague_patterns:
+        if re.search(pattern, content_lower):
+            flags.append(f"vague_claim: unsupported statement found ({pattern.strip(r'\\b')})")
+            break  # One flag is enough
 
     return flags
 
 
-async def run(content: str, brand_profile: dict | None = None) -> dict:
-    brand_name = brand_profile.get("name", "Not specified") if brand_profile else "Not specified"
-    banned_phrases = brand_profile.get("banned_phrases", []) if brand_profile else []
-    key_messages = brand_profile.get("key_messages", []) if brand_profile else []
+# ─── JSON Parser ──────────────────────────────────────────────────────────────
 
-    user_prompt = USER_TEMPLATE.format(
-        content=content,
-        brand_name=brand_name,
-        banned_phrases=", ".join(banned_phrases) if banned_phrases else "None",
-        key_messages="\n".join(f"• {m}" for m in key_messages) if key_messages else "None",
-    )
+def _parse_json_response(raw: str) -> dict | None:
+    """Robust JSON extraction from LLM response."""
+    # Try direct parse first
+    try:
+        return json.loads(raw.strip())
+    except json.JSONDecodeError:
+        pass
 
-    raw, tokens = await complete(SYSTEM, user_prompt, temperature=0.3, max_tokens=900)
+    # Find JSON block
+    start = raw.find("{")
+    end   = raw.rfind("}") + 1
+    if start == -1 or end == 0:
+        log.warning("QA: No JSON found in response. Raw: %s", raw[:200])
+        return None
 
     try:
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        scores = json.loads(raw[start:end])
-    except Exception:
-        scores = {k: 70 for k in SCORE_WEIGHTS}
-        scores["flags"] = []
-        scores["suggestions"] = []
-        scores["summary"] = "QA parsing failed — using defaults"
+        return json.loads(raw[start:end])
+    except json.JSONDecodeError as e:
+        log.warning("QA: JSON parse error: %s | Raw slice: %s", e, raw[start:start+200])
+        return None
 
-    local_flags = _local_flags(content, banned_phrases)
-    all_flags = list(dict.fromkeys(scores.get("flags", []) + local_flags))
 
+def _default_scores() -> dict:
+    return {k: 70 for k in SCORE_WEIGHTS}
+
+
+# ─── Agent Entry Point ────────────────────────────────────────────────────────
+
+async def run(
+    content:      str,
+    brand_profile: dict | None = None,
+    seo_enabled:  bool         = False,
+    seo_settings: dict         = None,
+) -> dict:
+    """
+    Perform QA analysis on content.
+
+    Returns comprehensive quality scores, flags, and pass/fail determination.
+    """
+    # ── Prepare inputs ────────────────────────────────────────────────────────
+    brand          = brand_profile or {}
+    brand_name     = brand.get("name", "Not specified")
+    banned_phrases = brand.get("banned_phrases") or []
+    key_messages   = brand.get("key_messages")   or []
+    compliance     = brand.get("compliance_notes") or "None"
+
+    # SEO keyword for local check
+    seo_keyword = None
+    seo_block   = ""
+    if seo_enabled and seo_settings:
+        seo_keyword = seo_settings.get("primaryKeyword")
+        if seo_keyword:
+            seo_block = f"\nSEO CHECK: Verify primary keyword \"{seo_keyword}\" appears naturally (not stuffed)."
+
+    # ── LLM QA ───────────────────────────────────────────────────────────────
+    user_prompt = USER_TEMPLATE.format(
+        content=content[:4000],   # Truncate very long content for QA
+        brand_name=brand_name,
+        banned_phrases=(
+            ", ".join(banned_phrases[:20]) if banned_phrases
+            else "None specified"
+        ),
+        key_messages=(
+            "\n".join(f"• {m}" for m in key_messages[:5]) if key_messages
+            else "None specified"
+        ),
+        compliance_notes=compliance,
+        seo_block=seo_block,
+    )
+
+    raw, tokens = await complete(
+        SYSTEM,
+        user_prompt,
+        temperature=0.2,    # Low temperature for consistency
+        max_tokens=800,
+    )
+
+    # ── Parse response ────────────────────────────────────────────────────────
+    scores = _parse_json_response(raw)
+
+    if scores is None:
+        log.error("QA: Failed to parse LLM response — using defaults")
+        scores = _default_scores()
+        scores.update({
+            "flags":       ["qa_parse_failed"],
+            "suggestions": ["QA parsing failed — manual review recommended"],
+            "summary":     "QA analysis incomplete — using default scores",
+        })
+
+    # ── Local deterministic analysis ──────────────────────────────────────────
+    local_flags = _local_analysis(content, banned_phrases, seo_keyword)
+
+    # Merge flags (dedup)
+    llm_flags   = scores.get("flags", [])
+    all_flags   = list(dict.fromkeys(llm_flags + local_flags))
+
+    # ── Calculate overall score ───────────────────────────────────────────────
     overall = _compute_weighted_score(scores)
 
+    # ── Pass/fail determination ───────────────────────────────────────────────
+    passed = _determine_pass(overall, scores, all_flags)
+
+    log.info(
+        "QA complete | overall=%d | passed=%s | flags=%d | tokens=%d",
+        overall, passed, len(all_flags), tokens,
+    )
+
     return {
-        # Weighted breakdown
-        "readabilityScore":     scores.get("readabilityScore", 70),
-        "brandScore":           scores.get("brandScore", 70),
-        "structureScore":       scores.get("structureScore", 70),
-        "platformScore":        scores.get("platformScore", 70),
-        "humanizationScore":    scores.get("humanizationScore", 70),
-        "consistencyScore":     scores.get("consistencyScore", 70),
-        "clarityScore":         scores.get("clarityScore", 70),
-        "engagementScore":      scores.get("engagementScore", 70),
-        "ctaScore":             scores.get("ctaScore", 50),
+        # Individual scores
+        "readabilityScore":  scores.get("readabilityScore",  70),
+        "brandScore":        scores.get("brandScore",        70),
+        "structureScore":    scores.get("structureScore",    70),
+        "platformScore":     scores.get("platformScore",     70),
+        "humanizationScore": scores.get("humanizationScore", 70),
+        "consistencyScore":  scores.get("consistencyScore",  70),
+        "clarityScore":      scores.get("clarityScore",      70),
+        "engagementScore":   scores.get("engagementScore",   70),
+        "ctaScore":          scores.get("ctaScore",          50),
         # Composite
-        "overallScore":  overall,
-        "flags":         all_flags,
-        "suggestions":   scores.get("suggestions", []),
-        "summary":       scores.get("summary", ""),
-        "passed":        overall >= PASS_THRESHOLD and len(all_flags) == 0,
-        "tokensUsed":    tokens,
-        "agent":         "qa",
-        "weights":       SCORE_WEIGHTS,
+        "overallScore":      overall,
+        "passed":            passed,
+        "flags":             all_flags,
+        "suggestions":       scores.get("suggestions", []),
+        "summary":           scores.get("summary", ""),
+        "tokensUsed":        tokens,
+        "agent":             "qa",
+        "weights":           SCORE_WEIGHTS,
     }

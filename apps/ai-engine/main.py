@@ -337,6 +337,8 @@ class FullPipelineRequest(BaseModel):
     language: str = "English"
     keywords: list[str] = Field(default_factory=list)
     specialInstructions: str = ""
+    seoEnabled:  bool = False
+    seoSettings: dict = Field(default_factory=dict)
 
 @app.post("/pipeline/run")
 async def run_full_pipeline(req: FullPipelineRequest):
@@ -362,6 +364,8 @@ async def run_full_pipeline(req: FullPipelineRequest):
             humanization_intensity=req.humanizationIntensity,
             enable_qa=req.enableQA,
             brand_profile=req.brandProfile.as_dict() if req.brandProfile else None,
+            seo_enabled=req.seoEnabled,
+            seo_settings=req.seoSettings,
         )
         pkg = compile_prompt(pdl)
         log.info(
@@ -384,6 +388,14 @@ async def run_full_pipeline(req: FullPipelineRequest):
             perspective=ci["perspective"],
             structure=ci["structure"],
             cta=ci["cta"],
+            icp_emphasis=ci.get("icp_emphasis", ""),
+            icp_avoid=ci.get("icp_avoid", ""),
+            perspective_voice=ci.get("perspective_voice", ""),
+            custom_structure_flow=ci.get("custom_structure_flow"),
+            language=ci.get("language", "English"),
+            word_count=ci.get("word_count"),
+            special_instructions=ci.get("special_instructions", ""),
+            tonality_spectrum=ci.get("tonality_spectrum"),
         )
         total_tokens += a1["tokensUsed"]
         canonical_draft = a1["content"]
@@ -391,7 +403,15 @@ async def run_full_pipeline(req: FullPipelineRequest):
 
         # Agent 2: Platform Optimizer (parallel)
         platform_results = await asyncio.gather(*[
-            platform_optimizer.run(canonical_draft=canonical_draft, target_platform=p)
+            platform_optimizer.run(
+                canonical_draft=canonical_draft,
+                target_platform=p,
+                audience_note=pkg.platform_instructions[p]["audience_note"],
+                word_count=pkg.platform_instructions[p]["word_count"],
+                seo_enabled=pkg.platform_instructions[p]["seo_enabled"],
+                seo_settings=pkg.platform_instructions[p]["seo_settings"],
+                cta=pkg.platform_instructions[p]["cta"],
+            )
             for p in req.targetPlatforms
         ])
         for r in platform_results:
@@ -411,7 +431,13 @@ async def run_full_pipeline(req: FullPipelineRequest):
         if pkg.humanization_instructions["enabled"]:
             intensity = pkg.humanization_instructions["intensity"]
             final_contents = await asyncio.gather(*[
-                humanizer.run(content=r["content"], intensity=intensity)
+                humanizer.run(
+                    content=r["content"],
+                    intensity=intensity,
+                    tonality=req.brandProfile.as_dict().get("tone_settings") if req.brandProfile else None,
+                    language=req.language,
+                    brand_phrases=req.brandProfile.as_dict().get("banned_phrases", []) if req.brandProfile else [],
+                )
                 for r in brand_results
             ])
             for r in final_contents:
@@ -427,7 +453,12 @@ async def run_full_pipeline(req: FullPipelineRequest):
         qa_results = []
         if pkg.qa_instructions["enabled"]:
             qa_results = await asyncio.gather(*[
-                qa_agent.run(content=r["content"], brand_profile=profile_dict)
+                qa_agent.run(
+                    content=r["content"],
+                    brand_profile=profile_dict,
+                    seo_enabled=getattr(req, 'seoEnabled', False),
+                    seo_settings=getattr(req, 'seoSettings', {}),
+                )
                 for r in final_contents
             ])
             for r in qa_results:
