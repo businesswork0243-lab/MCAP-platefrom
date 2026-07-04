@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS organizations (
   created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+
 CREATE TABLE IF NOT EXISTS users (
   id                       UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id          UUID        REFERENCES organizations(id) ON DELETE CASCADE,
@@ -22,6 +25,13 @@ CREATE TABLE IF NOT EXISTS users (
   refresh_token_expires_at TIMESTAMPTZ,
   created_at               TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'viewer';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS refresh_token TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS refresh_token_expires_at TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_organizations_name ON organizations(name);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
@@ -48,9 +58,36 @@ CREATE TABLE IF NOT EXISTS brand_profiles (
   value_propositions   JSONB       DEFAULT '[]',
   compliance_notes     TEXT,
   is_default           BOOLEAN     DEFAULT false,
+  website              TEXT,
+  industry             TEXT,
+  description          TEXT,
+  tone_enthusiasm      INTEGER     DEFAULT 5,
+  tone_empathy         INTEGER     DEFAULT 5,
+  likes                JSONB       DEFAULT '[]',
+  hates                JSONB       DEFAULT '[]',
+  dislikes             JSONB       DEFAULT '[]',
+  stands_for           JSONB       DEFAULT '[]',
+  stands_against       JSONB       DEFAULT '[]',
+  core_motivations     JSONB       DEFAULT '[]',
+  core_values          JSONB       DEFAULT '[]',
+  life_purpose         TEXT,
   created_at           TIMESTAMPTZ DEFAULT NOW(),
   updated_at           TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS website TEXT;
+ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS industry TEXT;
+ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS tone_enthusiasm INTEGER DEFAULT 5;
+ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS tone_empathy INTEGER DEFAULT 5;
+ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS likes JSONB DEFAULT '[]';
+ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS hates JSONB DEFAULT '[]';
+ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS dislikes JSONB DEFAULT '[]';
+ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS stands_for JSONB DEFAULT '[]';
+ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS stands_against JSONB DEFAULT '[]';
+ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS core_motivations JSONB DEFAULT '[]';
+ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS core_values JSONB DEFAULT '[]';
+ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS life_purpose TEXT;
 
 CREATE TABLE IF NOT EXISTS projects (
   id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -125,9 +162,28 @@ CREATE TABLE IF NOT EXISTS content_requests (
   keywords             JSONB       DEFAULT '[]',
   status               TEXT        DEFAULT 'queued',
   metadata             JSONB       DEFAULT '{}',
+  icp_profile_id       UUID,
+  custom_structure_id  UUID,
+  custom_structure_flow TEXT,
+  custom_cta           TEXT,
+  tonality_spectrum    JSONB       DEFAULT '{}',
+  word_count           INTEGER,
+  seo_enabled          BOOLEAN     DEFAULT false,
+  seo_settings         JSONB       DEFAULT '{}',
   created_at           TIMESTAMPTZ DEFAULT NOW(),
   updated_at           TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE content_requests ADD COLUMN IF NOT EXISTS campaign_id UUID;
+ALTER TABLE content_requests ADD COLUMN IF NOT EXISTS icp_profile_id UUID;
+ALTER TABLE content_requests ADD COLUMN IF NOT EXISTS custom_structure_id UUID;
+ALTER TABLE content_requests ADD COLUMN IF NOT EXISTS custom_structure_flow TEXT;
+ALTER TABLE content_requests ADD COLUMN IF NOT EXISTS custom_cta TEXT;
+ALTER TABLE content_requests ADD COLUMN IF NOT EXISTS tonality_spectrum JSONB DEFAULT '{}';
+ALTER TABLE content_requests ADD COLUMN IF NOT EXISTS word_count INTEGER;
+ALTER TABLE content_requests ADD COLUMN IF NOT EXISTS seo_enabled BOOLEAN DEFAULT false;
+ALTER TABLE content_requests ADD COLUMN IF NOT EXISTS seo_settings JSONB DEFAULT '{}';
+ALTER TABLE content_requests ADD COLUMN IF NOT EXISTS target_platform TEXT;
 
 CREATE TABLE IF NOT EXISTS agent_executions (
   id                 UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -153,8 +209,15 @@ CREATE TABLE IF NOT EXISTS artifacts (
   approved_by        UUID        REFERENCES users(id),
   approved_at        TIMESTAMPTZ,
   rejection_note     TEXT,
+  repurpose_id       UUID,
+  is_repurposed      BOOLEAN     DEFAULT false,
+  seo_meta           JSONB       DEFAULT '{}',
   created_at         TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS repurpose_id UUID;
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS is_repurposed BOOLEAN DEFAULT false;
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS seo_meta JSONB DEFAULT '{}';
 
 CREATE TABLE IF NOT EXISTS team_invitations (
   id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -173,8 +236,6 @@ CREATE TABLE IF NOT EXISTS icp_profiles (
   organization_id UUID REFERENCES organizations(id),
   brand_profile_id UUID REFERENCES brand_profiles(id),
   name VARCHAR(255) NOT NULL,
-  
-  -- Layer 1: Buyer Profile
   basic_characteristics JSONB DEFAULT '{}',
   interests_ecosystem JSONB DEFAULT '{}',
   personal_characteristics JSONB DEFAULT '{}',
@@ -185,20 +246,13 @@ CREATE TABLE IF NOT EXISTS icp_profiles (
   emotional_motivations JSONB DEFAULT '[]',
   frustrations JSONB DEFAULT '[]',
   information_sources JSONB DEFAULT '[]',
-  
-  -- Layer 2: Behavioral Mapping
   personality_scores JSONB DEFAULT '{}',
-  
-  -- Layer 3: Business Expectations
   need_hierarchy JSONB DEFAULT '{}',
   time_expectations JSONB DEFAULT '{}',
   success_criteria JSONB DEFAULT '[]',
-  
-  -- Layer 4: Strategic
   positioning_strategy TEXT,
   roi_expectations JSONB DEFAULT '{}',
   risk_perception TEXT,
-  
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -208,7 +262,7 @@ CREATE TABLE IF NOT EXISTS writing_structures (
   organization_id UUID REFERENCES organizations(id),
   name VARCHAR(255) NOT NULL,
   description TEXT,
-  structure_flow JSONB NOT NULL, -- Steps/sections array
+  structure_flow JSONB NOT NULL,
   is_system BOOLEAN DEFAULT false,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -220,7 +274,7 @@ CREATE TABLE IF NOT EXISTS brand_documents (
   file_url TEXT NOT NULL,
   file_type VARCHAR(100),
   file_size INTEGER,
-  parsed_content TEXT, -- Extracted text for AI
+  parsed_content TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
