@@ -37,8 +37,9 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     href:  '/content',
-    label: 'Content Library',
+    label: 'Content Library',    // ← Ye page ab exist karta hai
     icon:  '◫',
+    exact: true,                 // ← exact: true taaki /content/new pe highlight na ho
   },
   {
     href:  '/projects',

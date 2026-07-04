@@ -1033,6 +1033,7 @@ export default function NewContentPage() {
   const router = useRouter();
   const [step, setStep] = useState(0);
   const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState('');
 
   // Mock data — replace with actual API calls
   const savedICPs: ICPProfile[] = [];
@@ -1083,37 +1084,93 @@ export default function NewContentPage() {
 
   const handleGenerate = async () => {
     setGenerating(true);
+    setError('');
+
     try {
-      const payload = {
-        topic: form.topic,
-        objective: form.objective,
-        context: form.context,
-        audience: form.customAudience || 'General Business',
-        icp_description: form.icpDescription,
-        perspective: form.perspective,
-        writing_structure: form.writingStructureId,
-        targetPlatforms: form.targetPlatforms,
-        brandProfileId: form.brandProfileId,
-        selectedIcpId: form.selectedIcpId,
-        cta: form.ctaType === 'custom' ? form.customCta : form.ctaType,
-        language: form.language,
-        keywords: form.keywords,
-        specialInstructions: form.specialInstructions,
-        enableHumanization: form.enableHumanization,
-        humanizationIntensity: form.humanizationIntensity,
-        enableQA: form.enableQA,
-        enableSEO: form.enableSEO,
-        seoKeywords: form.seoKeywords,
-        wordCount: form.wordCount,
-        tonality: form.tonality,
+      // Validate before sending
+      if (!form.topic.trim()) {
+        setError('Topic is required');
+        setGenerating(false);
+        return;
+      }
+
+      if (form.targetPlatforms.length === 0) {
+        setError('Select at least one platform');
+        setGenerating(false);
+        return;
+      }
+
+      const isSystemStructure = [
+        'thesis', 'story', 'listicle', 'problem_solution', 
+        'before_after', 'aida', 'opinion', 'case_study'
+      ].includes(form.writingStructureId);
+
+      // Build payload matching backend schema exactly
+      const payload: Record<string, unknown> = {
+        topic:     form.topic.trim(),
+        objective: form.objective || 'Build thought leadership',
+        context:   form.context || '',
+
+        // Audience
+        audience:            form.customAudience || 'General Business',
+        audienceDescription: form.icpDescription || '',
+        icpProfileId:        form.selectedIcpId ?? undefined,
+
+        // Platforms — MUST be array of strings
+        platforms: form.targetPlatforms,
+
+        // Structure
+        writingStructure:    isSystemStructure ? form.writingStructureId : 'custom',
+        customStructureId:   !isSystemStructure ? form.writingStructureId : undefined,
+        customStructureFlow: form.customStructureFlow || undefined,
+
+        // Style
+        narrativePerspective: form.perspective  || 'Founder',
+        language:             form.language     || 'English',
+        keywords:             form.keywords     || [],
+
+        // CTA
+        ctaType:   form.ctaType   || 'comment',
+        customCta: form.customCta || undefined,
+
+        // Brand
+        brandProfileId: form.brandProfileId ?? undefined,
+
+        // AI Settings
+        humanizationEnabled:  form.enableHumanization,
+        humanizationLevel:    form.humanizationIntensity || 'medium',
+        qaEnabled:            form.enableQA,
+
+        // Tonality
+        tonalitySpectrum: form.tonality || {},
+
+        // Blog word count
+        wordCount: form.wordCount ?? undefined,
+
+        // SEO
+        seoEnabled:  form.enableSEO || false,
+        seoSettings: form.enableSEO ? {
+          primaryKeyword:    form.seoKeywords[0] || undefined,
+          secondaryKeywords: form.seoKeywords.slice(1),
+          metaDescription:   form.seoMetaDescription || undefined,
+        } : {},
+
+        // Special instructions
+        specialInstructions: form.specialInstructions || '',
       };
 
-      const response = await api.post('/content/generate', payload);
-      const { contentId } = response.data;
-      router.push(`/content/${contentId}/generating`);
-    } catch (error) {
-      console.error('Generation failed:', error);
-    } finally {
+      // Remove undefined values (backend validation mein issue)
+      const cleanPayload = Object.fromEntries(
+        Object.entries(payload).filter(([, v]) => v !== undefined)
+      );
+
+      const response = await api.post('/content/generate', cleanPayload);
+      const { requestId, contentId } = response.data;
+
+      router.push(`/content/${contentId || requestId}/generating`);
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Generation failed');
       setGenerating(false);
     }
   };
@@ -1144,6 +1201,13 @@ export default function NewContentPage() {
             />
           ))}
         </div>
+
+        {/* Error */}
+        {error && (
+          <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-sm text-red-400">
+            {error}
+          </div>
+        )}
 
         {/* Step Content */}
         <div className="bg-white/3 border border-white/10 rounded-2xl p-6 mb-6">

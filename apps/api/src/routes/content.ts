@@ -33,53 +33,59 @@ const seoSettingsSchema = z.object({
 }).default({})
 
 const createRequestSchema = z.object({
-  // Core
-  topic:      z.string().min(3).max(500),
-  objective:  z.string().optional(),
-  context:    z.string().optional(),
+  // Core — REQUIRED
+  topic:     z.string().min(3).max(500),
+
+  // Optional with defaults
+  objective:           z.string().optional().default('Build thought leadership'),
+  context:             z.string().optional().default(''),
 
   // Audience
-  audience:           z.string().optional(),
+  audience:            z.string().optional().default('General Business'),
   audienceDescription: z.string().optional(),
-  icpProfileId:       z.string().uuid().optional(),
+  icpProfileId:        z.string().uuid().optional(),
 
-  // Platform & Format
-  platforms:  z.array(z.string()).min(1),
-  wordCount:  z.number().min(100).max(5000).optional(),
+  // Platforms — REQUIRED, min 1
+  platforms: z.array(z.string().min(1)).min(1, 'Select at least one platform'),
+
+  // Blog word count
+  wordCount: z.number().min(100).max(5000).optional(),
 
   // Structure
-  writingStructure:     z.string().optional(),
+  writingStructure:     z.string().optional().default('thesis'),
   customStructureId:    z.string().uuid().optional(),
   customStructureFlow:  z.string().optional(),
 
   // Style
-  narrativePerspective: z.string().optional(),
-  language:             z.string().default('en'),
-  keywords:             z.array(z.string()).default([]),
+  narrativePerspective: z.string().optional().default('Founder'),
+  language:             z.string().optional().default('English'),
+  keywords:             z.array(z.string()).optional().default([]),
 
   // CTA
-  ctaType:    z.string().optional(),
-  customCta:  z.string().optional(),
+  ctaType:   z.string().optional(),
+  customCta: z.string().optional(),
 
   // Brand & Tone
-  brandProfileId: z.string().uuid().optional(),
-  toneOverrides:  z.record(z.number()).optional(),
-  tonalitySpectrum: tonalitySchema,
+  brandProfileId:   z.string().uuid().optional(),
+  toneOverrides:    z.record(z.number()).optional(),
+  tonalitySpectrum: z.record(z.number()).optional().default({}),
 
   // AI Settings
-  humanizationEnabled:  z.boolean().default(true),
-  humanizationLevel:    z.enum(['light', 'medium', 'aggressive']).default('medium'),
-  qaEnabled:            z.boolean().default(true),
-  requiresApproval:     z.boolean().default(false),
-  specialInstructions:  z.string().optional(),
+  humanizationEnabled:  z.boolean().optional().default(true),
+  humanizationLevel:    z.enum(['light', 'medium', 'aggressive']).optional().default('medium'),
+  qaEnabled:            z.boolean().optional().default(true),
+  requiresApproval:     z.boolean().optional().default(false),
 
   // SEO
-  seoEnabled:   z.boolean().default(false),
-  seoSettings:  seoSettingsSchema,
+  seoEnabled:  z.boolean().optional().default(false),
+  seoSettings: z.record(z.unknown()).optional().default({}),
+
+  // Special instructions
+  specialInstructions: z.string().optional(),
 
   // References
-  referenceUrls:  z.array(z.string()).default([]),
-  readingLevel:   z.string().optional(),
+  referenceUrls: z.array(z.string()).optional().default([]),
+  readingLevel:  z.string().optional(),
 
   // Org
   projectId: z.string().uuid().optional(),
@@ -253,9 +259,29 @@ contentRouter.get('/', async (req: AuthenticatedRequest, res: Response): Promise
 contentRouter.post('/generate', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const parsed = createRequestSchema.safeParse(req.body)
+
     if (!parsed.success) {
-      res.status(400).json({ error: parsed.error.errors })
-      return
+      // Readable error format
+      const errors = parsed.error.errors.map(e => ({
+        field:   e.path.join('.'),
+        message: e.message,
+        received: e.code === 'too_small' ? `Got ${(e as unknown as {received: number}).received}` : undefined,
+      }));
+
+      logger.warn('Content generate validation failed', {
+        errors,
+        body: {
+          topic:     req.body.topic,
+          platforms: req.body.platforms,
+        },
+      });
+
+      res.status(400).json({
+        error:   'Validation failed',
+        details: errors,
+        hint:    'Check platforms (array required) and topic (min 3 chars)',
+      });
+      return;
     }
 
     const data = parsed.data

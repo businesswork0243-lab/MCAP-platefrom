@@ -85,12 +85,48 @@ function createApiInstance(timeout: number = TIMEOUT_MS): AxiosInstance {
   instance.interceptors.response.use(
     (response) => response,
     async (error: AxiosError) => {
-      const status = error.response?.status;
-      const originalRequest = error.config as InternalAxiosRequestConfig & { 
+      const status          = error.response?.status;
+      const originalRequest = error.config as InternalAxiosRequestConfig & {
         _retryCount?: number;
         _retry?:      boolean;
       };
-      const apiError = error.response?.data as { error?: string; code?: string; message?: string };
+
+      const apiError = error.response?.data as {
+        error?:   string | any;
+        code?:    string;
+        message?: string;
+        details?: Array<{ field: string; message: string }>;
+      };
+
+      // ── Extract clean error message ───────────────────────────────────────────
+      function extractMessage(): string {
+        // Validation error array (Zod errors from backend)
+        if (Array.isArray(apiError?.error)) {
+          return apiError.error
+            .map((e: { message?: string; path?: string[] }) =>
+              e.path?.length ? `${e.path.join('.')}: ${e.message}` : e.message
+            )
+            .filter(Boolean)
+            .join(', ');
+        }
+
+        // Details array
+        if (Array.isArray(apiError?.details)) {
+          return apiError.details
+            .map(d => `${d.field}: ${d.message}`)
+            .join(', ');
+        }
+
+        // String error
+        if (typeof apiError?.error === 'string') return apiError.error;
+        if (typeof apiError?.message === 'string') return apiError.message;
+
+        // Network error
+        if (!error.response) return 'Network error — check your connection';
+
+        // Fallback with status
+        return `Request failed (${status})`;
+      }
 
       // ── 401 Token Expired — Auto Refresh ─────────────────────────────────────
       if (
@@ -143,14 +179,14 @@ function createApiInstance(timeout: number = TIMEOUT_MS): AxiosInstance {
           const returnTo = window.location.pathname;
           window.location.href = `/login?returnTo=${encodeURIComponent(returnTo)}`;
         }
-        return Promise.reject(error);
+        return Promise.reject(new Error('Session expired'));
       }
 
       // ── 429 - Rate limit
       if (status === 429) {
         const retryAfter = error.response?.headers['retry-after'];
         return Promise.reject(
-          new Error(`Rate limit exceeded. Retry after ${retryAfter || 60} seconds`)
+          new Error(`Rate limit exceeded. Try again in ${retryAfter || 60}s`)
         );
       }
 
@@ -166,17 +202,7 @@ function createApiInstance(timeout: number = TIMEOUT_MS): AxiosInstance {
         }
       }
 
-      // Network error
-      if (!error.response) {
-        return Promise.reject(
-          new Error('Network error. Check your internet connection.')
-        );
-      }
-
-      // API error message extract karo
-      const message = apiError?.error || apiError?.message || 'Something went wrong';
-      
-      return Promise.reject(new Error(message));
+      return Promise.reject(new Error(extractMessage()));
     }
   );
 
