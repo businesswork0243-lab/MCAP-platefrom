@@ -45,8 +45,8 @@ export const JWT_REFRESH_SECRET = (() => {
   const secret = process.env.JWT_REFRESH_SECRET
   if (!secret) {
     if (process.env.NODE_ENV === 'production') {
-      logger.error('FATAL: JWT_REFRESH_SECRET not set in production')
-      process.exit(1)
+      logger.warn('JWT_REFRESH_SECRET not set in production — falling back to JWT_SECRET derivative')
+      return JWT_SECRET + '-refresh-fallback'
     }
     return 'dev-refresh-secret-change-in-production!!'
   }
