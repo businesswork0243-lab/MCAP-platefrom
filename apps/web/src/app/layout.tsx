@@ -6,14 +6,18 @@ import { Providers } from './providers';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'MCAP — Multi-Agent Content Platform',
-  description: 'Enterprise AI content creation automation',
+  title:       'M-CAP · Multi-Agent Content Platform',
+  description: 'AI-powered content generation platform',
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={inter.className}>
+    <html lang="en" className="dark">
+      <body className={`${inter.className} bg-[#080809] text-white antialiased`}>
         <Providers>{children}</Providers>
       </body>
     </html>
