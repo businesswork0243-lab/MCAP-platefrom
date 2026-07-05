@@ -97,7 +97,9 @@ adminRouter.post('/migrate', async (req: Request, res: Response) => {
         ADD COLUMN IF NOT EXISTS password_hash            VARCHAR(255),
         ADD COLUMN IF NOT EXISTS last_login_at            TIMESTAMPTZ,
         ADD COLUMN IF NOT EXISTS refresh_token            VARCHAR(500),
-        ADD COLUMN IF NOT EXISTS refresh_token_expires_at TIMESTAMPTZ;
+        ADD COLUMN IF NOT EXISTS refresh_token_expires_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS password_reset_token       VARCHAR(500),
+        ADD COLUMN IF NOT EXISTS password_reset_expires_at  TIMESTAMPTZ;
     `)
     results.push('✅ users columns added')
 
@@ -247,6 +249,7 @@ adminRouter.post('/migrate', async (req: Request, res: Response) => {
       CREATE INDEX IF NOT EXISTS idx_content_requests_icp    ON content_requests(icp_profile_id);
       CREATE INDEX IF NOT EXISTS idx_icp_profiles_org        ON icp_profiles(organization_id);
       CREATE INDEX IF NOT EXISTS idx_clients_org             ON clients(organization_id);
+      CREATE INDEX IF NOT EXISTS idx_users_reset_token       ON users(password_reset_token) WHERE password_reset_token IS NOT NULL;
     `)
     results.push('✅ Indexes created')
 

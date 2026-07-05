@@ -684,3 +684,117 @@ authRouter.patch(
   }
 )
 
+import crypto from 'crypto'
+
+const forgotPasswordSchema = z.object({
+  email: z.string().email().toLowerCase().trim(),
+})
+
+// ─── POST /api/auth/forgot-password ──────────────────────────────────────────
+
+authRouter.post('/forgot-password', async (req: Request, res: Response): Promise<void> => {
+  const parsed = forgotPasswordSchema.safeParse(req.body)
+  if (!parsed.success) {
+    // Always return success — don't reveal if email exists
+    res.json({ message: 'If this email is registered, a reset link has been sent' })
+    return
+  }
+
+  const { email } = parsed.data
+
+  try {
+    const user = await queryOne<{ id: string; name: string }>(
+      'SELECT id, name FROM users WHERE email = $1 AND status = $2',
+      [email, 'active']
+    )
+
+    // Silently return success even if user doesn't exist (security)
+    if (!user) {
+      logger.info('Forgot password: user not found', { email })
+      res.json({ message: 'If this email is registered, a reset link has been sent' })
+      return
+    }
+
+    // Generate reset token
+    const resetToken = crypto.randomBytes(32).toString('hex')
+    const expiresAt  = new Date(Date.now() + 60 * 60 * 1000) // 1 hour
+
+    // Store in DB (add password_reset_token column if not exists)
+    await query(
+      `UPDATE users
+       SET password_reset_token = $1,
+           password_reset_expires_at = $2
+       WHERE id = $3`,
+      [resetToken, expiresAt, user.id]
+    )
+
+    // TODO: Send email with reset link
+    // const resetUrl = `${process.env.WEB_URL}/reset-password?token=${resetToken}`
+    // await emailService.sendPasswordReset({ to: email, name: user.name, resetUrl })
+
+    logger.info('Password reset requested', { userId: user.id, email })
+    res.json({ message: 'If this email is registered, a reset link has been sent' })
+
+  } catch (err) {
+    logger.error('Forgot password error:', { error: err })
+    // Still return success (security)
+    res.json({ message: 'If this email is registered, a reset link has been sent' })
+  }
+})
+
+// ─── POST /api/auth/reset-password ───────────────────────────────────────────
+
+const resetPasswordSchema = z.object({
+  token:       z.string().min(1),
+  newPassword: z.string()
+    .min(8)
+    .regex(/[A-Z]/, 'Must contain uppercase letter')
+    .regex(/[0-9]/, 'Must contain a number'),
+})
+
+authRouter.post('/reset-password', async (req: Request, res: Response): Promise<void> => {
+  const parsed = resetPasswordSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.errors })
+    return
+  }
+
+  const { token, newPassword } = parsed.data
+
+  try {
+    const user = await queryOne<{ id: string }>(
+      `SELECT id FROM users
+       WHERE password_reset_token = $1
+         AND password_reset_expires_at > NOW()
+         AND status = 'active'`,
+      [token]
+    )
+
+    if (!user) {
+      res.status(400).json({ error: 'Invalid or expired reset token' })
+      return
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 12)
+
+    await query(
+      `UPDATE users
+       SET password_hash = $1,
+           password_reset_token = NULL,
+           password_reset_expires_at = NULL,
+           refresh_token = NULL,
+           updated_at = NOW()
+       WHERE id = $2`,
+      [newHash, user.id]
+    )
+
+    logger.info('Password reset successful', { userId: user.id })
+    res.json({ message: 'Password reset successful. Please sign in with your new password.' })
+
+  } catch (err) {
+    logger.error('Reset password error:', { error: err })
+    res.status(500).json({ error: 'Failed to reset password' })
+  }
+})
+
+
