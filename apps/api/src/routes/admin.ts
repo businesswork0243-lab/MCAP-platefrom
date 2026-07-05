@@ -144,7 +144,7 @@ adminRouter.post('/migrate', async (req: Request, res: Response) => {
     // ── Clients table ────────────────────────────────────────────────────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS clients (
-        id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         organization_id  UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
         created_by       UUID REFERENCES users(id),
         name             VARCHAR(255) NOT NULL,
@@ -163,7 +163,7 @@ adminRouter.post('/migrate', async (req: Request, res: Response) => {
     // ── ICP profiles table ───────────────────────────────────────────────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS icp_profiles (
-        id                    UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         organization_id       UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
         brand_profile_id      UUID,
         created_by            UUID REFERENCES users(id),
@@ -194,7 +194,7 @@ adminRouter.post('/migrate', async (req: Request, res: Response) => {
     // ── Writing structures table ─────────────────────────────────────────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS writing_structures (
-        id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
         created_by      UUID REFERENCES users(id),
         name            VARCHAR(255) NOT NULL,
@@ -211,7 +211,7 @@ adminRouter.post('/migrate', async (req: Request, res: Response) => {
     // ── Brand documents table ────────────────────────────────────────────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS brand_documents (
-        id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         brand_profile_id UUID NOT NULL,
         organization_id  UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
         uploaded_by      UUID REFERENCES users(id),
@@ -229,7 +229,7 @@ adminRouter.post('/migrate', async (req: Request, res: Response) => {
     // ── Content repurposes table ─────────────────────────────────────────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS content_repurposes (
-        id                 UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         organization_id    UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
         source_request_id  UUID NOT NULL REFERENCES content_requests(id) ON DELETE CASCADE,
         source_artifact_id UUID,
