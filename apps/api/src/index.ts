@@ -14,6 +14,7 @@ import analyticsRoutes from './routes/analytics';
 import teamRoutes from './routes/team';
 import campaignRoutes from './routes/campaigns';
 import departmentRoutes from './routes/departments';
+import adminRoutes from './routes/admin';
 
 // Services
 import { initWebSocket } from './services/websocket';
@@ -182,6 +183,8 @@ app.get('/health', async (_req: Request, res: Response) => {
 
 // Public
 app.use('/api/auth', authLimiter, authRoutes);
+
+app.use('/api/admin', adminRoutes);
 
 // Protected
 app.use('/api/content', contentRoutes);
