@@ -448,14 +448,25 @@ contentRouter.get('/:id/artifacts', async (req: AuthenticatedRequest, res: Respo
     )
     if (!request) { res.status(404).json({ error: 'Not found' }); return }
 
+    // ✅ FIXED: Use actual column names
     const artifacts = await query(
-      `SELECT a.*,
-        (SELECT json_agg(row_to_json(r)) 
-         FROM content_repurposes r 
-         WHERE r.source_artifact_id = a.id) as repurposes
+      `SELECT 
+         a.id,
+         a.content_request_id as request_id,
+         a.agent_type as content_type,
+         a.content as body,
+         a.version,
+         a.status,
+         a.quality_score,
+         a.approved_by,
+         a.approved_at,
+         a.created_at,
+         a.metadata,
+         a.seo_meta,
+         a.is_repurposed
        FROM artifacts a
-       WHERE a.request_id = $1
-       ORDER BY a.platform, a.version DESC`,
+       WHERE a.content_request_id = $1
+       ORDER BY a.created_at ASC`,
       [req.params.id]
     )
 
@@ -484,21 +495,21 @@ contentRouter.post('/:id/repurpose', async (req: AuthenticatedRequest, res: Resp
     )
     if (!request) { res.status(404).json({ error: 'Content not found' }); return }
 
-    // Get source artifact content
+    // Get source artifact content - FIXED
     let sourceContent = ''
     if (sourceArtifactId) {
-      const artifact = await queryOne<{ body: string }>(
-        'SELECT body FROM artifacts WHERE id = $1 AND request_id = $2',
+      const artifact = await queryOne<{ content: string }>(
+        'SELECT content FROM artifacts WHERE id = $1 AND content_request_id = $2',
         [sourceArtifactId, req.params.id]
       )
-      sourceContent = artifact?.body || ''
+      sourceContent = artifact?.content || ''
     } else {
-      // Use the best available artifact (qa_reviewed → humanized → latest)
-      const artifact = await queryOne<{ body: string }>(
-        `SELECT body FROM artifacts
-         WHERE request_id = $1
+      // Use best available artifact
+      const artifact = await queryOne<{ content: string }>(
+        `SELECT content FROM artifacts
+         WHERE content_request_id = $1
          ORDER BY
-           CASE content_type
+           CASE agent_type
              WHEN 'qa_reviewed' THEN 1
              WHEN 'humanized' THEN 2
              WHEN 'brand_aligned' THEN 3
@@ -507,7 +518,7 @@ contentRouter.post('/:id/repurpose', async (req: AuthenticatedRequest, res: Resp
          LIMIT 1`,
         [req.params.id]
       )
-      sourceContent = artifact?.body || ''
+      sourceContent = artifact?.content || ''
     }
 
     if (!sourceContent) {
@@ -560,9 +571,15 @@ contentRouter.post('/:id/repurpose', async (req: AuthenticatedRequest, res: Resp
         // Save as artifact too
         await client.query(
           `INSERT INTO artifacts
-            (id, request_id, platform, content_type, body, repurpose_id, is_repurposed, status)
-           VALUES ($1, $2, $3, 'platform_adapted', $4, $5, true, 'generated')`,
-          [artifactId, req.params.id, targetPlatform, repurposedContent, repurposeId]
+            (id, content_request_id, agent_type, content, status, is_repurposed, repurpose_id, metadata)
+           VALUES ($1, $2, 'platform_adapted', $3, 'generated', true, $4, $5)`,
+          [
+            artifactId, 
+            req.params.id, 
+            repurposedContent, 
+            repurposeId,
+            JSON.stringify({ platform: targetPlatform })
+          ]
         )
       })
 
@@ -624,7 +641,7 @@ contentRouter.post(
       await query(
         `UPDATE artifacts
          SET status = 'approved', approved_by = $1, approved_at = NOW()
-         WHERE id = $2 AND request_id = $3`,
+         WHERE id = $2 AND content_request_id = $3`,  // ✅ FIXED
         [req.user!.id, req.params.artifactId, req.params.requestId]
       )
       res.json({ message: 'Artifact approved' })
@@ -635,7 +652,7 @@ contentRouter.post(
   }
 )
 
-// POST /api/content/:requestId/artifacts/:artifactId/reject
+// Reject bhi same fix
 contentRouter.post(
   '/:requestId/artifacts/:artifactId/reject',
   async (req: AuthenticatedRequest, res: Response): Promise<void> => {
@@ -643,8 +660,8 @@ contentRouter.post(
       const { note } = req.body
       await query(
         `UPDATE artifacts
-         SET status = 'rejected', rejection_note = $1, updated_at = NOW()
-         WHERE id = $2 AND request_id = $3`,
+         SET status = 'rejected', rejection_note = $1
+         WHERE id = $2 AND content_request_id = $3`,  // ✅ FIXED
         [note ?? null, req.params.artifactId, req.params.requestId]
       )
       res.json({ message: 'Artifact rejected' })

@@ -114,7 +114,7 @@ async function logAgentExecution(
   }
 }
 
-// ── Save Artifact ─────────────────────────────────────────────────────────────
+// ── Save Artifact (FIXED - Match actual DB schema) ────────────────────────────
 
 async function saveArtifact(
   requestId: string,
@@ -126,11 +126,21 @@ async function saveArtifact(
   const id = uuidv4();
 
   try {
+    // ✅ Actual column names use karo
     await query(
       `INSERT INTO artifacts
-        (id, request_id, platform, content_type, body, metadata, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'generated')`,
-      [id, requestId, platform, contentType, body, JSON.stringify(metadata)]
+        (id, content_request_id, agent_type, content, status, metadata, version)
+       VALUES ($1, $2, $3, $4, 'generated', $5, 1)`,
+      [
+        id,
+        requestId,           // content_request_id
+        contentType,         // agent_type (e.g., 'canonical', 'humanized')
+        body,                // content
+        JSON.stringify({ 
+          ...metadata, 
+          platform  // Store platform in metadata
+        }),
+      ]
     );
     return id;
   } catch (err) {
