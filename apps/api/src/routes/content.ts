@@ -419,10 +419,16 @@ contentRouter.get('/jobs/:id', async (req: AuthenticatedRequest, res: Response):
     if (!request) { res.status(404).json({ error: 'Not found' }); return }
 
     const executions = await query(
-      `SELECT agent_name, status, tokens_used, duration_ms, error_message, created_at
-       FROM agent_executions
-       WHERE request_id = $1
-       ORDER BY created_at`,
+      `SELECT 
+     agent_name, 
+     status, 
+     tokens_used, 
+     duration_ms, 
+     error_message, 
+     created_at
+   FROM agent_executions
+   WHERE COALESCE(request_id, content_request_id) = $1
+   ORDER BY created_at ASC`,
       [req.params.id]
     )
 
