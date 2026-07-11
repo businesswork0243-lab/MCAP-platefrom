@@ -3,23 +3,22 @@
 import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
-import { motion } from 'framer-motion';
 import api from '@/lib/api';
 import { formatRelative } from '@/lib/utils';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface ContentRequest {
-  id:              string;
-  topic:           string;
-  status:          string;
-  platforms:       string[] | string;
-  target_platform: string;
-  language:        string;
-  created_at:      string;
-  created_by_name: string;
+  id:                 string;
+  topic:              string;
+  status:             string;
+  platforms:          string[] | string | null;
+  target_platform:    string | null;
+  language:           string | null;
+  created_at:         string;
+  created_by_name:    string | null;
   brand_profile_name: string | null;
-  client_name:     string | null;
+  client_name:        string | null;
 }
 
 interface Pagination {
@@ -31,51 +30,87 @@ interface Pagination {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
-  approved:        { label: 'Ready',       color: 'text-green-400 bg-green-500/15 border-green-500/30'   },
-  published:       { label: 'Published',   color: 'text-blue-400 bg-blue-500/15 border-blue-500/30'     },
-  awaiting_review: { label: 'Review',      color: 'text-amber-400 bg-amber-500/15 border-amber-500/30'  },
-  running:         { label: 'Generating',  color: 'text-violet-400 bg-violet-500/15 border-violet-500/30'},
-  queued:          { label: 'Queued',      color: 'text-gray-400 bg-gray-500/15 border-gray-500/30'     },
-  generation_failed:{ label: 'Failed',     color: 'text-red-400 bg-red-500/15 border-red-500/30'        },
-  draft:           { label: 'Draft',       color: 'text-gray-500 bg-gray-500/10 border-gray-500/20'     },
+  approved:          { label: 'Ready',      color: 'text-green-400 bg-green-500/15 border-green-500/30'    },
+  published:         { label: 'Published',  color: 'text-blue-400 bg-blue-500/15 border-blue-500/30'       },
+  awaiting_review:   { label: 'Review',     color: 'text-amber-400 bg-amber-500/15 border-amber-500/30'    },
+  running:           { label: 'Generating', color: 'text-violet-400 bg-violet-500/15 border-violet-500/30' },
+  processing:        { label: 'Processing', color: 'text-violet-400 bg-violet-500/15 border-violet-500/30' },
+  queued:            { label: 'Queued',     color: 'text-gray-400 bg-gray-500/15 border-gray-500/30'       },
+  generation_failed: { label: 'Failed',     color: 'text-red-400 bg-red-500/15 border-red-500/30'          },
+  failed:            { label: 'Failed',     color: 'text-red-400 bg-red-500/15 border-red-500/30'          },
+  completed:         { label: 'Complete',   color: 'text-green-400 bg-green-500/15 border-green-500/30'    },
+  draft:             { label: 'Draft',      color: 'text-gray-500 bg-gray-500/10 border-gray-500/20'       },
+  unknown:           { label: 'Unknown',    color: 'text-gray-500 bg-gray-500/10 border-gray-500/20'       },
 };
 
 const PLATFORM_ICONS: Record<string, string> = {
   linkedin_post:     '💼',
   linkedin_article:  '📰',
   twitter_thread:    '🐦',
-  x_thread:         '🐦',
-  blog_post:        '✍️',
-  newsletter:       '📧',
-  instagram_caption:'📸',
-  youtube_script:   '🎬',
-  podcast_notes:    '🎙️',
+  twitter_post:      '🐦',
+  x_thread:          '🐦',
+  x_post:            '🐦',
+  blog_post:         '✍️',
+  blog:              '✍️',
+  newsletter:        '📧',
+  instagram_caption: '📸',
+  instagram_post:    '📸',
+  youtube_script:    '🎬',
+  podcast_notes:     '🎙️',
+  canonical:         '📄',
 };
 
 const STATUS_FILTERS = [
-  { value: '',               label: 'All'       },
-  { value: 'approved',       label: 'Ready'     },
-  { value: 'awaiting_review',label: 'Review'    },
-  { value: 'running',        label: 'Generating'},
-  { value: 'generation_failed',label: 'Failed'  },
+  { value: '',                  label: 'All'        },
+  { value: 'approved',          label: 'Ready'      },
+  { value: 'awaiting_review',   label: 'Review'     },
+  { value: 'running',           label: 'Generating' },
+  { value: 'generation_failed', label: 'Failed'     },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function parsePlatforms(raw: string[] | string): string[] {
+function parsePlatforms(raw: string[] | string | null | undefined): string[] {
+  if (!raw) return [];
   if (Array.isArray(raw)) return raw;
-  try { return JSON.parse(raw); } catch { return []; }
+  if (typeof raw !== 'string') return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeStatusLabel(status: string | null | undefined): string {
+  if (!status || typeof status !== 'string') return 'Unknown';
+  return status.replace(/_/g, ' ');
+}
+
+function getStatusConfig(status: string | null | undefined) {
+  if (!status || typeof status !== 'string') {
+    return STATUS_CONFIG.unknown;
+  }
+  return STATUS_CONFIG[status] ?? {
+    label: safeStatusLabel(status),
+    color: 'text-gray-400 bg-gray-500/15 border-gray-500/30',
+  };
+}
+
+function safeString(val: unknown, fallback = ''): string {
+  if (val === null || val === undefined) return fallback;
+  return String(val);
 }
 
 // ─── Content Row ──────────────────────────────────────────────────────────────
 
 function ContentRow({ item }: { item: ContentRequest }) {
-  const status   = STATUS_CONFIG[item.status] ?? {
-    label: item.status.replace(/_/g, ' '),
-    color: 'text-gray-400 bg-gray-500/15 border-gray-500/30',
-  };
+  // ✅ SAFE: All fields have fallbacks
+  const status = getStatusConfig(item.status);
   const platforms = parsePlatforms(item.platforms);
-  const isActive  = ['queued', 'running'].includes(item.status);
+  const isActive = ['queued', 'running', 'processing'].includes(item.status || '');
+  const topic = safeString(item.topic, 'Untitled');
+  const language = safeString(item.language, 'English');
 
   return (
     <Link
@@ -84,28 +119,36 @@ function ContentRow({ item }: { item: ContentRequest }) {
     >
       {/* Platform icons */}
       <div className="flex -space-x-1 shrink-0 w-16">
-        {platforms.slice(0, 3).map((p, i) => (
-          <span key={i} className="text-base" title={p}>
-            {PLATFORM_ICONS[p] ?? '📄'}
-          </span>
-        ))}
-        {platforms.length > 3 && (
-          <span className="text-xs text-gray-600 self-center ml-1">
-            +{platforms.length - 3}
-          </span>
+        {platforms.length === 0 ? (
+          <span className="text-base">📄</span>
+        ) : (
+          <>
+            {platforms.slice(0, 3).map((p, i) => (
+              <span key={i} className="text-base" title={p}>
+                {PLATFORM_ICONS[p] ?? '📄'}
+              </span>
+            ))}
+            {platforms.length > 3 && (
+              <span className="text-xs text-gray-600 self-center ml-1">
+                +{platforms.length - 3}
+              </span>
+            )}
+          </>
         )}
       </div>
 
       {/* Topic */}
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium text-white truncate group-hover:text-violet-300 transition-colors">
-          {item.topic}
+          {topic}
         </p>
         <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-600">
           {item.brand_profile_name && (
-            <span>🏢 {item.brand_profile_name}</span>
+            <>
+              <span>🏢 {item.brand_profile_name}</span>
+              <span>·</span>
+            </>
           )}
-          {item.brand_profile_name && <span>·</span>}
           <span>{formatRelative(item.created_at)}</span>
           {item.created_by_name && (
             <>
@@ -118,11 +161,13 @@ function ContentRow({ item }: { item: ContentRequest }) {
 
       {/* Language */}
       <span className="text-xs text-gray-600 shrink-0 hidden sm:block">
-        {item.language}
+        {language}
       </span>
 
       {/* Status */}
-      <span className={`px-2.5 py-1 rounded-full text-xs font-medium border shrink-0 ${status.color}`}>
+      <span
+        className={`px-2.5 py-1 rounded-full text-xs font-medium border shrink-0 ${status.color}`}
+      >
         {isActive && (
           <span className="inline-block w-1.5 h-1.5 rounded-full bg-current mr-1.5 animate-pulse" />
         )}
@@ -140,38 +185,44 @@ function ContentRow({ item }: { item: ContentRequest }) {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function ContentLibraryPage() {
-  const [search,      setSearch]      = useState('');
-  const [statusFilter,setStatusFilter]= useState('');
-  const [page,        setPage]        = useState(1);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [page, setPage] = useState(1);
   const LIMIT = 20;
 
-  // Build query string
   const queryStr = useMemo(() => {
     const params = new URLSearchParams();
-    params.set('page',  String(page));
+    params.set('page', String(page));
     params.set('limit', String(LIMIT));
     if (statusFilter) params.set('status', statusFilter);
     return params.toString();
   }, [page, statusFilter]);
 
-  const { data, isLoading, isFetching } = useQuery({
+  const { data, isLoading, isFetching, error } = useQuery({
     queryKey: ['content-list', queryStr],
-    queryFn:  () => api.get(`/content?${queryStr}`).then(r => r.data),
+    queryFn: () => api.get(`/content?${queryStr}`).then(r => r.data),
     staleTime: 30_000,
   });
 
-  const requests: ContentRequest[] = data?.requests ?? [];
-  const pagination: Pagination     = data?.pagination ?? { page: 1, limit: LIMIT, total: 0 };
+  // ✅ SAFE: Filter out invalid items
+  const requests: ContentRequest[] = useMemo(() => {
+    const raw = data?.requests ?? [];
+    return raw.filter((r: unknown): r is ContentRequest => {
+      return !!r && typeof r === 'object' && 'id' in r;
+    });
+  }, [data]);
 
-  // Client-side search
+  const pagination: Pagination = data?.pagination ?? { page: 1, limit: LIMIT, total: 0 };
+
   const filtered = useMemo(() => {
     if (!search.trim()) return requests;
     const q = search.toLowerCase();
-    return requests.filter(r =>
-      r.topic.toLowerCase().includes(q) ||
-      r.brand_profile_name?.toLowerCase().includes(q) ||
-      r.created_by_name?.toLowerCase().includes(q)
-    );
+    return requests.filter(r => {
+      const topic = safeString(r.topic).toLowerCase();
+      const brand = safeString(r.brand_profile_name).toLowerCase();
+      const author = safeString(r.created_by_name).toLowerCase();
+      return topic.includes(q) || brand.includes(q) || author.includes(q);
+    });
   }, [requests, search]);
 
   const totalPages = Math.ceil(pagination.total / LIMIT);
@@ -179,7 +230,6 @@ export default function ContentLibraryPage() {
   return (
     <div className="min-h-screen bg-[#080809] text-white">
       <div className="max-w-6xl mx-auto px-6 py-10 space-y-6">
-
         {/* Header */}
         <div className="flex items-start justify-between">
           <div>
@@ -198,11 +248,8 @@ export default function ContentLibraryPage() {
 
         {/* Filters */}
         <div className="flex items-center gap-3 flex-wrap">
-          {/* Search */}
           <div className="relative flex-1 min-w-64">
-            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-600">
-              ⌕
-            </span>
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-600">⌕</span>
             <input
               value={search}
               onChange={e => { setSearch(e.target.value); setPage(1); }}
@@ -211,7 +258,6 @@ export default function ContentLibraryPage() {
             />
           </div>
 
-          {/* Status filter */}
           <div className="flex gap-1 p-1 bg-white/5 rounded-xl border border-white/10 flex-wrap">
             {STATUS_FILTERS.map(f => (
               <button
@@ -229,12 +275,17 @@ export default function ContentLibraryPage() {
           </div>
         </div>
 
+        {/* Error state */}
+        {error && (
+          <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm">
+            Failed to load content. Please refresh the page.
+          </div>
+        )}
+
         {/* Content Table */}
         <div className={`bg-white/3 border border-white/10 rounded-2xl overflow-hidden transition-opacity ${
           isFetching ? 'opacity-70' : ''
         }`}>
-
-          {/* Table header */}
           <div className="flex items-center gap-4 px-5 py-3 border-b border-white/5">
             <div className="w-16 text-xs text-gray-600 font-medium">PLATFORM</div>
             <div className="flex-1 text-xs text-gray-600 font-medium">TOPIC</div>
@@ -263,10 +314,7 @@ export default function ContentLibraryPage() {
                 {search ? 'No results found' : 'No content yet'}
               </p>
               <p className="text-gray-500 text-sm mt-1">
-                {search
-                  ? 'Try a different search'
-                  : 'Generate your first piece of content'
-                }
+                {search ? 'Try a different search' : 'Generate your first piece of content'}
               </p>
               {!search && (
                 <Link

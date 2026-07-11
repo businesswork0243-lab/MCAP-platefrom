@@ -209,51 +209,68 @@ function buildSpecialInstructions(data: z.infer<typeof createRequestSchema>): st
 
 // ─── CONTENT ROUTES ───────────────────────────────────────────────────────────
 
-// GET /api/content
+// GET /api/content - FIXED
 contentRouter.get('/', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const { page = '1', limit = '20', status, clientId } = req.query
-    const offset = (parseInt(page as string) - 1) * parseInt(limit as string)
-    const params: unknown[] = [req.user!.organizationId, parseInt(limit as string), offset]
+    const { page = '1', limit = '20', status, clientId } = req.query;
+    const pageNum = Math.max(1, parseInt(page as string) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit as string) || 20));
+    const offset = (pageNum - 1) * limitNum;
+    
+    const params: unknown[] = [req.user!.organizationId, limitNum, offset];
+    let filters = '';
+    
+    if (status) filters += ` AND cr.status = $${params.push(status)}`;
+    if (clientId) filters += ` AND cr.client_id = $${params.push(clientId)}`;
 
-    let filters = ''
-    if (status) filters += ` AND cr.status = $${params.push(status)}`
-    if (clientId) filters += ` AND cr.client_id = $${params.push(clientId)}`
-
+    // ✅ FIXED: Safe COALESCE for missing fields
     const requests = await query(
-      `SELECT cr.*,
-        u.name as created_by_name,
-        c.name as client_name,
-        bp.name as brand_profile_name
+      `SELECT 
+         cr.id,
+         cr.topic,
+         COALESCE(cr.status, 'draft') as status,
+         COALESCE(cr.platforms, '[]'::jsonb) as platforms,
+         cr.target_platform,
+         COALESCE(cr.language, 'English') as language,
+         cr.created_at,
+         cr.updated_at,
+         cr.error_message,
+         cr.total_tokens_used,
+         u.name as created_by_name,
+         c.name as client_name,
+         bp.name as brand_profile_name
        FROM content_requests cr
-       JOIN users u ON u.id = cr.created_by
+       LEFT JOIN users u ON u.id = cr.created_by
        LEFT JOIN clients c ON c.id = cr.client_id
        LEFT JOIN brand_profiles bp ON bp.id = cr.brand_profile_id
        WHERE cr.organization_id = $1 ${filters}
        ORDER BY cr.created_at DESC
        LIMIT $2 OFFSET $3`,
       params
-    )
+    );
 
-    // Total count
     const countResult = await queryOne<{ count: string }>(
-      `SELECT COUNT(*) FROM content_requests WHERE organization_id = $1`,
-      [req.user!.organizationId]
-    )
+      `SELECT COUNT(*) FROM content_requests 
+       WHERE organization_id = $1 ${filters.replace(/\$\d+/g, (m) => {
+         const idx = parseInt(m.slice(1));
+         return idx > 2 ? `$${idx - 2}` : m;
+       })}`,
+      [req.user!.organizationId, ...params.slice(3)]
+    );
 
     res.json({
       requests,
       pagination: {
-        page: parseInt(page as string),
-        limit: parseInt(limit as string),
+        page: pageNum,
+        limit: limitNum,
         total: parseInt(countResult?.count || '0'),
       }
-    })
+    });
   } catch (err) {
-    logger.error('GET /content error:', { error: err })
-    res.status(500).json({ error: 'Failed to fetch content' })
+    logger.error('GET /content error:', { error: err });
+    res.status(500).json({ error: 'Failed to fetch content' });
   }
-})
+});
 
 // POST /api/content/generate
 contentRouter.post('/generate', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
@@ -756,6 +773,68 @@ contentRouter.post('/:id/rehumanize', async (req: AuthenticatedRequest, res: Res
     res.status(500).json({ error: 'Failed to rehumanize' });
   }
 });
+
+// PATCH /api/content/:id/status
+contentRouter.patch('/:id/status', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { action } = req.body
+    if (action !== 'approve' && action !== 'reject') {
+      res.status(400).json({ error: 'Invalid action. Must be approve or reject.' })
+      return
+    }
+
+    const request = await queryOne(
+      'SELECT id FROM content_requests WHERE id = $1 AND organization_id = $2',
+      [req.params.id, req.user!.organizationId]
+    )
+    if (!request) {
+      res.status(404).json({ error: 'Content not found' })
+      return
+    }
+
+    const newStatus = action === 'approve' ? 'approved' : 'rejected'
+    
+    // Also approve or reject the latest artifact if one exists
+    await withTransaction(async (client) => {
+      await client.query(
+        `UPDATE content_requests
+         SET status = $1, updated_at = NOW(),
+             completed_at = CASE WHEN $1 = 'approved' THEN NOW() ELSE completed_at END
+         WHERE id = $2`,
+        [newStatus, req.params.id]
+      )
+
+      // Find the latest active artifact to approve/reject
+      const latestArtifact = await client.query(
+        `SELECT id FROM artifacts 
+         WHERE content_request_id = $1 
+         ORDER BY created_at DESC LIMIT 1`,
+        [req.params.id]
+      )
+
+      if (latestArtifact.rows[0]) {
+        await client.query(
+          `UPDATE artifacts
+           SET status = $1, 
+               approved_by = CASE WHEN $2 = 'approve' THEN $3::uuid ELSE approved_by END,
+               approved_at = CASE WHEN $2 = 'approve' THEN NOW() ELSE approved_at END
+           WHERE id = $4`,
+          [
+            newStatus, 
+            action, 
+            req.user!.id, 
+            latestArtifact.rows[0].id
+          ]
+        )
+      }
+    })
+
+    res.json({ message: `Content ${newStatus}` })
+  } catch (err) {
+    logger.error('PATCH /content/:id/status error:', { error: err })
+    res.status(500).json({ error: 'Failed to update content status' })
+  }
+})
 
 
 // GET /api/content/:id/artifacts

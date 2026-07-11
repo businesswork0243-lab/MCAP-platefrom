@@ -133,7 +133,7 @@ projectRouter.get('/:id', async (req: AuthenticatedRequest, res: Response): Prom
       return
     }
 
-    // Fetch content requests with scores
+    // ✅ FIXED: artifacts use content_request_id
     const requests = await query(
       `SELECT
         cr.id,
@@ -142,15 +142,15 @@ projectRouter.get('/:id', async (req: AuthenticatedRequest, res: Response): Prom
         cr.status,
         cr.created_at,
         cr.target_platform,
-        u.name                                                          AS created_by_name,
+        u.name AS created_by_name,
         ROUND(
           AVG((a.quality_score->>'overall')::numeric)
-        )::int                                                          AS avg_score,
-        COUNT(DISTINCT a.id)::int                                       AS artifact_count
+        )::int AS avg_score,
+        COUNT(DISTINCT a.id)::int AS artifact_count
        FROM content_requests cr
        LEFT JOIN users u ON u.id = cr.created_by
        LEFT JOIN artifacts a
-         ON a.request_id = cr.id
+         ON a.content_request_id = cr.id   -- ✅ FIXED
         AND a.quality_score IS NOT NULL
        WHERE cr.project_id = $1
        GROUP BY cr.id, u.name
@@ -159,20 +159,21 @@ projectRouter.get('/:id', async (req: AuthenticatedRequest, res: Response): Prom
       [req.params.id]
     )
 
-    // Project stats
+    // ✅ FIXED: agent_executions use content_request_id
     const stats = await queryOne<{
       total: string;
       completed: string;
       total_tokens: string;
     }>(
       `SELECT
-        COUNT(cr.id)::text                                              AS total,
+        COUNT(cr.id)::text AS total,
         COUNT(cr.id) FILTER (
-          WHERE cr.status IN ('approved', 'published')
-        )::text                                                         AS completed,
-        COALESCE(SUM(ae.tokens_used), 0)::text                         AS total_tokens
+          WHERE cr.status IN ('approved', 'published', 'awaiting_review')
+        )::text AS completed,
+        COALESCE(SUM(ae.tokens_used), 0)::text AS total_tokens
        FROM content_requests cr
-       LEFT JOIN agent_executions ae ON ae.request_id = cr.id
+       LEFT JOIN agent_executions ae 
+         ON COALESCE(ae.request_id, ae.content_request_id) = cr.id  -- ✅ FIXED
        WHERE cr.project_id = $1`,
       [req.params.id]
     )
