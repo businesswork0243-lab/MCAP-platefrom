@@ -5,6 +5,9 @@ import { useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import api from '@/lib/api';
+import { PlatformIconBadge, PLATFORM_CONFIG } from '@/components/platform-icons';
+import { Check } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -396,6 +399,115 @@ function StepAudience({
   );
 }
 
+// ─── Platform Selector Grid ──────────────────────────────────────────────────
+
+const AVAILABLE_PLATFORMS = [
+  'linkedin_post',
+  'linkedin_article',
+  'twitter_thread',
+  'instagram_caption',
+  'blog_post',
+  'newsletter',
+  'youtube_script',
+  'podcast_notes',
+];
+
+interface PlatformSelectorProps {
+  selected: string[];
+  onChange: (platforms: string[]) => void;
+}
+
+function PlatformSelector({ selected, onChange }: PlatformSelectorProps) {
+  const togglePlatform = (key: string) => {
+    if (selected.includes(key)) {
+      onChange(selected.filter(p => p !== key));
+    } else {
+      onChange([...selected, key]);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div>
+        <label className="text-sm font-semibold text-white">
+          Target Platform(s) <span className="text-red-500">*</span>
+        </label>
+        <p className="text-xs text-muted-foreground mt-1">
+          Select multiple — AI will create platform-optimized variants for each
+        </p>
+      </div>
+
+      {/* Platform Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {AVAILABLE_PLATFORMS.map((key) => {
+          const config = PLATFORM_CONFIG[key];
+          if (!config) return null;
+
+          const isSelected = selected.includes(key);
+          const { Icon, color, bgColor, label, wordCount } = config;
+
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => togglePlatform(key)}
+              className={cn(
+                'group relative flex items-center gap-3 p-4 rounded-xl border transition-all',
+                'text-left overflow-hidden',
+                isSelected
+                  ? 'bg-violet-500/10 border-violet-500/50 shadow-lg shadow-violet-500/10'
+                  : 'bg-white/[0.02] border-white/10 hover:bg-white/[0.04] hover:border-white/20'
+              )}
+            >
+              {/* Icon Container */}
+              <div className={cn(
+                'flex items-center justify-center w-11 h-11 rounded-lg shrink-0 transition-transform',
+                bgColor,
+                'group-hover:scale-110'
+              )}>
+                <Icon
+                  className="w-6 h-6"
+                  style={{ color }}
+                />
+              </div>
+
+              {/* Label */}
+              <div className="flex-1 min-w-0">
+                <p className={cn(
+                  'text-sm font-medium transition-colors',
+                  isSelected ? 'text-white' : 'text-gray-300'
+                )}>
+                  {label}
+                </p>
+                {wordCount && (
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {wordCount}
+                  </p>
+                )}
+              </div>
+
+              {/* Check Indicator */}
+              {isSelected && (
+                <div className="w-5 h-5 rounded-full bg-violet-500 flex items-center justify-center shrink-0 shadow-lg">
+                  <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Selection Count */}
+      {selected.length > 0 && (
+        <p className="text-xs text-violet-400">
+          ✓ {selected.length} platform{selected.length !== 1 ? 's' : ''} selected
+        </p>
+      )}
+    </div>
+  );
+}
+
 // Step 3: Platform & Format
 function StepPlatform({
   form,
@@ -408,48 +520,12 @@ function StepPlatform({
     p.includes('blog') || p.includes('newsletter') || p.includes('article')
   );
 
-  const togglePlatform = (platformId: string) => {
-    if (form.targetPlatforms.includes(platformId)) {
-      update('targetPlatforms', form.targetPlatforms.filter(p => p !== platformId));
-    } else {
-      update('targetPlatforms', [...form.targetPlatforms, platformId]);
-    }
-  };
-
   return (
     <div className="space-y-6">
-      <div>
-        <label className="block text-sm font-medium text-gray-400 mb-1">
-          Target Platform(s) *
-        </label>
-        <p className="text-xs text-gray-600 mb-4">
-          Select multiple — AI will create platform-optimized variants for each
-        </p>
-        <div className="grid grid-cols-2 gap-3">
-          {PLATFORMS.map(platform => (
-            <button
-              key={platform.id}
-              onClick={() => togglePlatform(platform.id)}
-              className={`p-4 text-left rounded-xl border transition-all ${
-                form.targetPlatforms.includes(platform.id)
-                  ? 'bg-violet-600/20 border-violet-500'
-                  : 'bg-white/5 border-white/10 hover:border-white/20'
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <span className="text-2xl">{platform.icon}</span>
-                <div>
-                  <p className="text-sm font-medium text-white">{platform.label}</p>
-                  <p className="text-xs text-gray-500">~{platform.maxWords} words</p>
-                </div>
-                {form.targetPlatforms.includes(platform.id) && (
-                  <span className="ml-auto text-violet-400">✓</span>
-                )}
-              </div>
-            </button>
-          ))}
-        </div>
-      </div>
+      <PlatformSelector
+        selected={form.targetPlatforms}
+        onChange={(platforms) => update('targetPlatforms', platforms)}
+      />
 
       {/* Word Count — only for blog/long-form */}
       {isBlogSelected && (

@@ -11,6 +11,7 @@ import {
   ArrowLeft, Copy, Download, RefreshCw, CheckCircle,
   XCircle, BarChart2, AlertTriangle, Lock
 } from 'lucide-react';
+import { PlatformIcon, getPlatformConfig } from '@/components/platform-icons';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,19 +40,19 @@ interface ContentRequest {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const ALL_PLATFORMS = [
-  { key: 'canonical',         label: '📄 Canonical Draft',   isBase: true },
-  { key: 'linkedin_post',     label: '💼 LinkedIn Post'                    },
-  { key: 'linkedin_article',  label: '📰 LinkedIn Article'                 },
-  { key: 'x_post',            label: '🐦 X Post'                           },
-  { key: 'x_thread',          label: '🧵 X Thread'                         },
-  { key: 'twitter_post',      label: '🐦 Twitter Post'                     },
-  { key: 'twitter_thread',    label: '🧵 Twitter Thread'                   },
-  { key: 'blog_post',         label: '📝 Blog Post'                        },
-  { key: 'blog',              label: '📝 Blog'                             },
-  { key: 'newsletter',        label: '📧 Newsletter'                       },
-  { key: 'instagram_caption', label: '📸 Instagram Caption'                },
-  { key: 'instagram_post',    label: '📸 Instagram Post'                   },
-  { key: 'youtube_script',    label: '🎬 YouTube Script'                   },
+  { key: 'canonical',         isBase: true },
+  { key: 'linkedin_post'                    },
+  { key: 'linkedin_article'                 },
+  { key: 'x_post'                           },
+  { key: 'x_thread'                         },
+  { key: 'twitter_post'                     },
+  { key: 'twitter_thread'                   },
+  { key: 'blog_post'                        },
+  { key: 'blog'                             },
+  { key: 'newsletter'                       },
+  { key: 'instagram_caption'                },
+  { key: 'instagram_post'                   },
+  { key: 'youtube_script'                   },
 ];
 
 const STATUS_COLORS: Record<string, any> = {
@@ -323,7 +324,7 @@ export default function ContentWorkspacePage() {
 
   const statusColor = STATUS_COLORS[request.status || ''] || 'outline';
   const statusLabel = safeReplace(request.status, /_/g, ' ') || 'Unknown';
-  const activePlatformLabel = ALL_PLATFORMS.find(p => p.key === activeTab)?.label || activeTab;
+  const activePlatformLabel = getPlatformConfig(activeTab).label || activeTab;
 
   return (
     <div className="h-full flex flex-col">
@@ -371,16 +372,18 @@ export default function ContentWorkspacePage() {
           </div>
 
           {ALL_PLATFORMS.map((platform) => {
+            const config = getPlatformConfig(platform.key);
             const isAvailable = availablePlatforms.has(platform.key);
             const wasUserSelected = platform.isBase || selectedPlatforms.includes(platform.key);
             const isActive = activeTab === platform.key;
+            const { Icon, color, label } = config;
 
             return (
               <button
                 key={platform.key}
                 onClick={() => setActiveTab(platform.key)}
                 className={cn(
-                  'w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between group',
+                  'w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center gap-3 group',
                   isActive
                     ? 'bg-primary/10 text-primary font-medium border-r-2 border-primary'
                     : isAvailable
@@ -388,12 +391,23 @@ export default function ContentWorkspacePage() {
                       : 'text-muted-foreground/50 hover:bg-accent/50'
                 )}
               >
-                <span className="truncate">{platform.label}</span>
+                {/* Real Brand Icon */}
+                <Icon 
+                  className={cn(
+                    'w-4 h-4 shrink-0 transition-opacity',
+                    !isAvailable && 'opacity-40'
+                  )} 
+                  style={{ color: isAvailable ? color : undefined }}
+                />
                 
+                {/* Label */}
+                <span className="truncate flex-1">{label}</span>
+                
+                {/* Status Indicator */}
                 {isAvailable ? (
-                  <span className="text-green-500 text-xs shrink-0 ml-2">●</span>
+                  <span className="text-green-500 text-xs shrink-0">●</span>
                 ) : (
-                  <Lock className="w-3 h-3 shrink-0 ml-2 text-muted-foreground/40" />
+                  <Lock className="w-3 h-3 shrink-0 text-muted-foreground/40" />
                 )}
               </button>
             );
@@ -402,10 +416,14 @@ export default function ContentWorkspacePage() {
 
         {/* ═══ Center — Editor ═══ */}
         <div className="flex-1 flex flex-col overflow-hidden">
+          {/* ═══ Center — Editor Header ═══ */}
           <div className="flex items-center justify-between px-6 py-3 border-b">
-            <span className="text-sm font-medium">
-              {activePlatformLabel}
-            </span>
+            <div className="flex items-center gap-2">
+              <PlatformIcon platform={activeTab} size="md" />
+              <span className="text-sm font-medium">
+                {getPlatformConfig(activeTab).label}
+              </span>
+            </div>
             <Button variant="ghost" size="sm" onClick={copyContent} disabled={!hasContent}>
               <Copy className="w-3.5 h-3.5 mr-1" />
               {copied ? 'Copied!' : 'Copy'}
@@ -471,8 +489,10 @@ export default function ContentWorkspacePage() {
                 <p className="text-muted-foreground">No platforms selected</p>
               ) : (
                 selectedPlatforms.map(p => {
-                  const label = ALL_PLATFORMS.find(pl => pl.key === p)?.label || p;
+                  const config = getPlatformConfig(p);
                   const isGenerated = availablePlatforms.has(p);
+                  const { Icon, color, label } = config;
+                  
                   return (
                     <div key={p} className="flex items-center gap-2">
                       {isGenerated ? (
@@ -480,6 +500,10 @@ export default function ContentWorkspacePage() {
                       ) : (
                         <div className="w-3.5 h-3.5 rounded-full border border-muted-foreground shrink-0" />
                       )}
+                      <Icon 
+                        className="w-3.5 h-3.5 shrink-0" 
+                        style={{ color: isGenerated ? color : undefined, opacity: isGenerated ? 1 : 0.4 }} 
+                      />
                       <span className={isGenerated ? '' : 'text-muted-foreground'}>
                         {label}
                       </span>

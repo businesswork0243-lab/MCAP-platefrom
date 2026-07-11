@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { formatRelative } from '@/lib/utils';
+import { PlatformIcon, getPlatformConfig } from '@/components/platform-icons';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,23 +42,6 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   completed:         { label: 'Complete',   color: 'text-green-400 bg-green-500/15 border-green-500/30'    },
   draft:             { label: 'Draft',      color: 'text-gray-500 bg-gray-500/10 border-gray-500/20'       },
   unknown:           { label: 'Unknown',    color: 'text-gray-500 bg-gray-500/10 border-gray-500/20'       },
-};
-
-const PLATFORM_ICONS: Record<string, string> = {
-  linkedin_post:     '💼',
-  linkedin_article:  '📰',
-  twitter_thread:    '🐦',
-  twitter_post:      '🐦',
-  x_thread:          '🐦',
-  x_post:            '🐦',
-  blog_post:         '✍️',
-  blog:              '✍️',
-  newsletter:        '📧',
-  instagram_caption: '📸',
-  instagram_post:    '📸',
-  youtube_script:    '🎬',
-  podcast_notes:     '🎙️',
-  canonical:         '📄',
 };
 
 const STATUS_FILTERS = [
@@ -120,18 +104,24 @@ function ContentRow({ item }: { item: ContentRequest }) {
       {/* Platform icons */}
       <div className="flex -space-x-1 shrink-0 w-16">
         {platforms.length === 0 ? (
-          <span className="text-base">📄</span>
+          <PlatformIcon platform="canonical" size="sm" className="opacity-40" />
         ) : (
           <>
             {platforms.slice(0, 3).map((p, i) => (
-              <span key={i} className="text-base" title={p}>
-                {PLATFORM_ICONS[p] ?? '📄'}
-              </span>
+              <div 
+                key={i} 
+                className="w-6 h-6 rounded-full bg-white/5 border border-white/10 flex items-center justify-center"
+                title={getPlatformConfig(p).label}
+              >
+                <PlatformIcon platform={p} size="sm" />
+              </div>
             ))}
             {platforms.length > 3 && (
-              <span className="text-xs text-gray-600 self-center ml-1">
-                +{platforms.length - 3}
-              </span>
+              <div className="w-6 h-6 rounded-full bg-white/5 border border-white/10 flex items-center justify-center">
+                <span className="text-[10px] text-gray-500 font-medium">
+                  +{platforms.length - 3}
+                </span>
+              </div>
             )}
           </>
         )}
