@@ -94,15 +94,17 @@ async function logAgentExecution(
   data: { tokensUsed?: number; durationMs?: number; errorMessage?: string } = {}
 ): Promise<void> {
   try {
+    // ✅ FIXED: Explicit type casts to avoid type mismatch
     await query(
       `INSERT INTO agent_executions
-        (id, request_id, content_request_id, agent_name, agent_type,
+        (id, content_request_id, request_id, agent_name, agent_type,
          status, tokens_used, duration_ms, error_message, created_at)
-       VALUES ($1, $2, $2, $3, $3, $4, $5, $6, $7, NOW())`,
+       VALUES ($1::uuid, $2::uuid, $2::uuid, $3::varchar, $3::text,
+               $4::text, $5::integer, $6::integer, $7::text, NOW())`,
       [
         uuidv4(),
         requestId,
-        agentName,
+        agentName,           // Used for both agent_name and agent_type
         status,
         data.tokensUsed ?? null,
         data.durationMs ?? null,
@@ -110,7 +112,11 @@ async function logAgentExecution(
       ]
     );
   } catch (err) {
-    logger.warn('Failed to log agent execution', { err, agentName });
+    // Non-critical - just log warning
+    logger.warn('Failed to log agent execution', { 
+      err: err instanceof Error ? err.message : err, 
+      agentName 
+    });
   }
 }
 

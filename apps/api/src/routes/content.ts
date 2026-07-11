@@ -439,6 +439,325 @@ contentRouter.get('/jobs/:id', async (req: AuthenticatedRequest, res: Response):
   }
 })
 
+// ─── GET /api/content/:id (Single content with artifacts) ─────────────────────
+
+contentRouter.get('/:id', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    // UUID validation
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(req.params.id)) {
+      res.status(400).json({ error: 'Invalid content ID format' });
+      return;
+    }
+
+    // Fetch request
+    const request = await queryOne(
+      `SELECT cr.*,
+        u.name as created_by_name,
+        bp.name as brand_profile_name
+       FROM content_requests cr
+       LEFT JOIN users u ON u.id = cr.created_by
+       LEFT JOIN brand_profiles bp ON bp.id = cr.brand_profile_id
+       WHERE cr.id = $1 AND cr.organization_id = $2`,
+      [req.params.id, req.user!.organizationId]
+    );
+
+    if (!request) {
+      res.status(404).json({ error: 'Content not found' });
+      return;
+    }
+
+    // Fetch artifacts (with correct column mapping)
+    const artifacts = await query(
+      `SELECT 
+         a.id,
+         a.content_request_id as request_id,
+         a.agent_type as content_type,
+         a.content as body,
+         a.version,
+         a.status,
+         a.quality_score,
+         a.approved_by,
+         a.approved_at,
+         a.rejection_note,
+         a.metadata,
+         a.seo_meta,
+         a.is_repurposed,
+         a.created_at
+       FROM artifacts a
+       WHERE a.content_request_id = $1
+       ORDER BY a.created_at ASC`,
+      [req.params.id]
+    );
+
+    // Fetch agent executions
+    let executions: Record<string, unknown>[] = [];
+    try {
+      executions = await query(
+        `SELECT 
+           COALESCE(agent_name, agent_type, 'unknown') as agent_name,
+           COALESCE(status, 'completed') as status,
+           tokens_used,
+           duration_ms,
+           error_message,
+           created_at
+         FROM agent_executions
+         WHERE COALESCE(request_id, content_request_id) = $1
+         ORDER BY created_at ASC`,
+        [req.params.id]
+      );
+    } catch (execErr) {
+      logger.warn('Failed to fetch executions', { error: execErr });
+    }
+
+    res.json({
+      request,
+      artifacts,
+      executions,
+      meta: {
+        isComplete: ['completed', 'approved', 'awaiting_review'].includes(request.status as string),
+        isFailed:   ['failed', 'generation_failed'].includes(request.status as string),
+        isProcessing: ['queued', 'running', 'processing'].includes(request.status as string),
+        totalArtifacts: artifacts.length,
+      },
+    });
+  } catch (err) {
+    logger.error('GET /content/:id error:', { error: err });
+    res.status(500).json({ error: 'Failed to fetch content' });
+  }
+});
+
+
+// ─── POST /api/content/:id/rerun ──────────────────────────────────────────────
+
+contentRouter.post('/:id/rerun', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    // Fetch original request
+    const original = await queryOne<{
+      id: string;
+      topic: string;
+      objective: string;
+      context: string;
+      audience: string;
+      audience_description: string;
+      platforms: string[] | string;
+      writing_structure: string;
+      narrative_perspective: string;
+      cta_type: string;
+      custom_cta: string;
+      brand_profile_id: string;
+      icp_profile_id: string;
+      tonality_spectrum: Record<string, number>;
+      humanization_enabled: boolean;
+      humanization_level: string;
+      qa_enabled: boolean;
+      language: string;
+      keywords: string[] | string;
+      special_instructions: string;
+      word_count: number;
+      seo_enabled: boolean;
+      seo_settings: Record<string, unknown>;
+      client_id: string;
+      project_id: string;
+    }>(
+      `SELECT * FROM content_requests 
+       WHERE id = $1 AND organization_id = $2`,
+      [req.params.id, req.user!.organizationId]
+    );
+
+    if (!original) {
+      res.status(404).json({ error: 'Original content not found' });
+      return;
+    }
+
+    // Parse JSONB fields safely
+    const platforms = typeof original.platforms === 'string' 
+      ? JSON.parse(original.platforms) 
+      : original.platforms || ['linkedin_post'];
+    
+    const keywords = typeof original.keywords === 'string'
+      ? JSON.parse(original.keywords)
+      : original.keywords || [];
+
+    const tonalitySpectrum = typeof original.tonality_spectrum === 'string'
+      ? JSON.parse(original.tonality_spectrum)
+      : original.tonality_spectrum || {};
+
+    const seoSettings = typeof original.seo_settings === 'string'
+      ? JSON.parse(original.seo_settings)
+      : original.seo_settings || {};
+
+    // Create new request
+    const newId = uuidv4();
+
+    await query(
+      `INSERT INTO content_requests (
+        id, project_id, organization_id, created_by, client_id,
+        topic, objective, context, audience, audience_description,
+        platforms, target_platform,
+        writing_structure, narrative_perspective, 
+        cta_type, custom_cta,
+        brand_profile_id, icp_profile_id,
+        tonality_spectrum,
+        humanization_enabled, humanization_level,
+        qa_enabled, language, special_instructions,
+        keywords, word_count,
+        seo_enabled, seo_settings,
+        status
+      ) VALUES (
+        $1, $2, $3, $4, $5,
+        $6, $7, $8, $9, $10,
+        $11, $12,
+        $13, $14,
+        $15, $16,
+        $17, $18,
+        $19,
+        $20, $21,
+        $22, $23, $24,
+        $25, $26,
+        $27, $28,
+        'queued'
+      )`,
+      [
+        newId,
+        original.project_id,
+        req.user!.organizationId,
+        req.user!.id,
+        original.client_id,
+        original.topic,
+        original.objective,
+        original.context,
+        original.audience,
+        original.audience_description,
+        JSON.stringify(platforms),
+        platforms[0],
+        original.writing_structure,
+        original.narrative_perspective,
+        original.cta_type,
+        original.custom_cta,
+        original.brand_profile_id,
+        original.icp_profile_id,
+        JSON.stringify(tonalitySpectrum),
+        original.humanization_enabled,
+        original.humanization_level,
+        original.qa_enabled,
+        original.language,
+        original.special_instructions,
+        JSON.stringify(keywords),
+        original.word_count,
+        original.seo_enabled,
+        JSON.stringify(seoSettings),
+      ]
+    );
+
+    // Queue AI job
+    await addContentJob(newId, {
+      topic: original.topic,
+      objective: original.objective || 'Build thought leadership',
+      context: original.context || '',
+      audience: original.audience || 'General Business',
+      icp_description: '',
+      perspective: original.narrative_perspective || 'Founder',
+      writing_structure: original.writing_structure || 'thesis',
+      custom_structure_flow: null,
+      cta: original.custom_cta || original.cta_type || '',
+      targetPlatforms: platforms,
+      targetPlatform: platforms[0],
+      language: original.language || 'English',
+      keywords,
+      specialInstructions: original.special_instructions || '',
+      enableHumanization: original.humanization_enabled ?? true,
+      humanizationIntensity: (original.humanization_level as 'light' | 'medium' | 'aggressive') || 'medium',
+      enableQA: original.qa_enabled ?? true,
+      brandProfileId: original.brand_profile_id || '',
+      brandProfile: null,
+      tonalitySpectrum,
+      wordCount: original.word_count,
+      seoEnabled: original.seo_enabled ?? false,
+      seoSettings,
+      organizationId: req.user!.organizationId,
+      createdBy: req.user!.id,
+    } as any);
+
+    logger.info('Content rerun queued', {
+      originalId: req.params.id,
+      newId,
+      topic: original.topic.slice(0, 50),
+    });
+
+    res.status(202).json({
+      requestId: newId,
+      contentId: newId,
+      status: 'queued',
+      message: 'Rerun started',
+      originalId: req.params.id,
+    });
+  } catch (err) {
+    logger.error('POST /content/:id/rerun error:', { error: err });
+    res.status(500).json({ error: 'Failed to rerun content' });
+  }
+});
+
+
+// ─── POST /api/content/:id/rehumanize ─────────────────────────────────────────
+
+contentRouter.post('/:id/rehumanize', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const request = await queryOne(
+      'SELECT * FROM content_requests WHERE id = $1 AND organization_id = $2',
+      [req.params.id, req.user!.organizationId]
+    );
+
+    if (!request) {
+      res.status(404).json({ error: 'Content not found' });
+      return;
+    }
+
+    // Get latest artifact
+    const artifact = await queryOne<{ content: string; agent_type: string }>(
+      `SELECT content, agent_type FROM artifacts
+       WHERE content_request_id = $1
+       ORDER BY created_at DESC LIMIT 1`,
+      [req.params.id]
+    );
+
+    if (!artifact) {
+      res.status(400).json({ error: 'No content to humanize' });
+      return;
+    }
+
+    // Call AI Engine humanizer
+    const aiUrl = process.env.AI_ENGINE_URL || 'http://localhost:8000';
+    const response = await axios.post(
+      `${aiUrl}/agents/humanizer`,
+      {
+        content: artifact.content,
+        intensity: req.body.intensity || 'medium',
+      },
+      { timeout: 60_000 }
+    );
+
+    // Save new artifact
+    const newArtifactId = uuidv4();
+    await query(
+      `INSERT INTO artifacts
+        (id, content_request_id, agent_type, content, status, version)
+       VALUES ($1, $2, 'humanized', $3, 'generated', 1)`,
+      [newArtifactId, req.params.id, response.data.content]
+    );
+
+    res.json({
+      artifactId: newArtifactId,
+      content: response.data.content,
+      tokensUsed: response.data.tokensUsed || 0,
+    });
+  } catch (err) {
+    logger.error('POST /rehumanize error:', { error: err });
+    res.status(500).json({ error: 'Failed to rehumanize' });
+  }
+});
+
+
 // GET /api/content/:id/artifacts
 contentRouter.get('/:id/artifacts', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
