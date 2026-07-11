@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { createServer } from 'http';
 import dotenv from 'dotenv';
+import { startKeepAlive } from './services/keepalive';
 
 // Routes
 import authRoutes from './routes/auth';
@@ -246,6 +247,10 @@ async function start(): Promise<void> {
     // 2. WebSocket init karo
     initWebSocket(httpServer);
     logger.info('WebSocket initialized');
+
+    if (process.env.NODE_ENV === 'production' && process.env.AI_ENGINE_URL) {
+      startKeepAlive();
+    }
 
     // 3. Worker sirf agar explicitly enabled ho
     if (process.env.RUN_WORKERS === 'true') {

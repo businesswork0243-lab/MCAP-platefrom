@@ -85,3 +85,30 @@ export async function addExportJob(
 }
 
 export { connection as redisConnection };
+
+export interface ContentJobData {
+  requestId: string;
+  organizationId: string;
+  topic: string;
+  objective?: string;
+  context?: string;
+  audience?: string;
+  icp_description?: string;
+  perspective?: string;
+  writing_structure?: string;
+  cta?: string;
+  targetPlatforms?: string[];
+  brandProfile?: any;
+  enableHumanization?: boolean;
+  humanizationIntensity?: string;
+  enableQA?: boolean;
+  language?: string;
+  keywords?: string[];
+  specialInstructions?: string;
+  seoEnabled?: boolean;
+  seoSettings?: any;
+  targetPlatform?: string;
+  brandProfileId?: string;
+  projectId?: string;
+  createdBy?: string;
+}
