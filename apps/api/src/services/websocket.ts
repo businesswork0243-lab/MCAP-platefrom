@@ -201,6 +201,18 @@ export function initWebSocket(httpServer: HttpServer): SocketServer {
       socket.leave(`request:${id}`);
     });
 
+    socket.on('join:request', (requestId: string) => {
+      if (!requestId) return;
+      
+      socket.join(`request:${requestId}`);
+      logger.debug('Socket joined request room', {
+        socketId: socket.id,
+        requestId,
+      });
+      
+      socket.emit('joined', { requestId });
+    });
+
     // Ping/pong for connection health check
     socket.on('ping', () => {
       socket.emit('pong', { timestamp: Date.now() });

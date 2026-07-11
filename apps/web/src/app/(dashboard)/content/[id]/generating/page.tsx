@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useContentSocket } from '@/hooks/useContentSocket';
@@ -10,17 +10,24 @@ import api from '@/lib/api';
 // ─── Progress Step Config ─────────────────────────────────────────────────────
 
 const PROGRESS_STEPS = [
-  { min: 0,  max: 15,  label: 'Initializing pipeline',    icon: '⚙️' },
-  { min: 15, max: 30,  label: 'Fetching brand context',   icon: '🏢' },
-  { min: 30, max: 50,  label: 'Writing canonical draft',  icon: '✍️' },
-  { min: 50, max: 65,  label: 'Platform optimization',    icon: '📱' },
-  { min: 65, max: 75,  label: 'Brand alignment',          icon: '🎯' },
-  { min: 75, max: 85,  label: 'Humanizing content',       icon: '✦'  },
-  { min: 85, max: 95,  label: 'Quality assurance',        icon: '✓'  },
-  { min: 95, max: 100, label: 'Saving results',           icon: '💾' },
+  { min: 0,   max: 15,  label: 'Initializing pipeline',    icon: '⚙️', key: 'initializing'          },
+  { min: 15,  max: 30,  label: 'Fetching brand context',   icon: '🏢', key: 'fetching_brand_context' },
+  { min: 30,  max: 50,  label: 'Writing canonical draft',  icon: '✍️', key: 'writing_canonical_draft'},
+  { min: 50,  max: 68,  label: 'Platform optimization',    icon: '📱', key: 'platform_optimization'  },
+  { min: 68,  max: 80,  label: 'Brand alignment',          icon: '🎯', key: 'brand_alignment'        },
+  { min: 80,  max: 91,  label: 'Humanizing content',       icon: '✦',  key: 'humanizing_content'     },
+  { min: 91,  max: 97,  label: 'Quality assurance',        icon: '✓',  key: 'quality_assurance'      },
+  { min: 97,  max: 100, label: 'Saving results',           icon: '💾', key: 'saving_results'         },
 ];
 
-function getCurrentStep(progress: number) {
+function getCurrentStep(progress: number, stepKey?: string) {
+  // Priority: step key from backend
+  if (stepKey) {
+    const found = PROGRESS_STEPS.find(s => s.key === stepKey);
+    if (found) return found;
+  }
+  
+  // Fallback: match by progress range
   return PROGRESS_STEPS.find(s => progress >= s.min && progress < s.max)
     ?? PROGRESS_STEPS[PROGRESS_STEPS.length - 1];
 }
@@ -28,64 +35,103 @@ function getCurrentStep(progress: number) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function GeneratingPage() {
-  const { id }  = useParams<{ id: string }>();
-  const router  = useRouter();
+  const { id } = useParams<{ id: string }>();
+  const router = useRouter();
 
-  const [progress, setProgress]   = useState(0);
-  const [step, setStep]           = useState(PROGRESS_STEPS[0]);
-  const [status, setStatus]       = useState<'running' | 'done' | 'failed'>('running');
+  const [progress, setProgress] = useState(0);
+  const [currentStepKey, setCurrentStepKey] = useState<string>('initializing');
+  const [status, setStatus] = useState<'running' | 'done' | 'failed'>('running');
   const [failReason, setFailReason] = useState('');
+  const [elapsedSec, setElapsedSec] = useState(0);
 
-  // Poll DB status as fallback (if WebSocket misses events)
+  // ── Elapsed time counter ────────────────────────────────────────
+  useEffect(() => {
+    if (status !== 'running') return;
+    
+    const start = Date.now();
+    const timer = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+    
+    return () => clearInterval(timer);
+  }, [status]);
+
+  // ── Polling as fallback for status ─────────────────────────────
   const { data } = useQuery({
     queryKey: ['content-generating', id],
     queryFn:  () => api.get(`/content/jobs/${id}`).then(r => r.data),
     refetchInterval: (data) => {
       const s = (data as { request?: { status: string } })?.request?.status;
-      if (['approved', 'awaiting_review', 'generation_failed'].includes(s ?? '')) {
-        return false; // Stop polling
+      if (['approved', 'awaiting_review', 'generation_failed', 'completed', 'failed'].includes(s ?? '')) {
+        return false;
       }
-      return 5_000; // Poll every 5s
+      return 5_000;
     },
     enabled: status === 'running',
   });
 
-  // Check if already done from DB
+  // ── Check DB status ────────────────────────────────────────────
   useEffect(() => {
     const s = data?.request?.status;
-    if (s === 'approved' || s === 'awaiting_review') {
+    if (s === 'approved' || s === 'awaiting_review' || s === 'completed') {
       setProgress(100);
       setStatus('done');
       setTimeout(() => router.replace(`/content/${id}`), 1_500);
-    } else if (s === 'generation_failed') {
+    } else if (s === 'generation_failed' || s === 'failed') {
       setStatus('failed');
-      setFailReason('Generation failed. Please try again.');
+      setFailReason(data?.request?.error_message || 'Generation failed. Please try again.');
     }
   }, [data, id, router]);
 
-  // WebSocket for real-time updates
+  // ── WebSocket handlers ─────────────────────────────────────────
+  const handleProgress = useCallback((data: { progress: number; step: string }) => {
+    console.log('[Progress]', data);
+    
+    if (typeof data.progress === 'number') {
+      setProgress((prev) => Math.max(prev, data.progress)); // Never go backwards
+    }
+    
+    if (data.step) {
+      setCurrentStepKey(data.step);
+    }
+  }, []);
+
+  const handleCompleted = useCallback(() => {
+    console.log('[Completed]');
+    setProgress(100);
+    setStatus('done');
+    setTimeout(() => router.replace(`/content/${id}`), 1_500);
+  }, [id, router]);
+
+  const handleFailed = useCallback((data: { reason?: string; error?: string }) => {
+    console.log('[Failed]', data);
+    setStatus('failed');
+    setFailReason(data.reason || data.error || 'Generation failed');
+  }, []);
+
   useContentSocket({
     requestId: id,
     enabled:   status === 'running',
-
-    onProgress: ({ progress: p, step: stepLabel }) => {
-      setProgress(p);
-      setStep(getCurrentStep(p));
-    },
-
-    onCompleted: () => {
-      setProgress(100);
-      setStatus('done');
-      setTimeout(() => router.replace(`/content/${id}`), 1_500);
-    },
-
-    onFailed: ({ reason }) => {
-      setStatus('failed');
-      setFailReason(reason || 'Generation failed');
-    },
+    onProgress: handleProgress,
+    onCompleted: handleCompleted,
+    onFailed: handleFailed,
   });
 
-  const currentStep = getCurrentStep(progress);
+  // ── Timeout safety net ─────────────────────────────────────────
+  useEffect(() => {
+    const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+    
+    const timeout = setTimeout(() => {
+      if (status === 'running' && progress < 100) {
+        setStatus('failed');
+        setFailReason('Generation is taking longer than expected. The AI service may be waking up. Please try again in a minute.');
+      }
+    }, TIMEOUT_MS);
+
+    return () => clearTimeout(timeout);
+  }, [status, progress]);
+
+  const currentStep = getCurrentStep(progress, currentStepKey);
 
   return (
     <div className="min-h-screen bg-[#080809] flex flex-col items-center justify-center gap-10 p-6">
@@ -100,11 +146,8 @@ export default function GeneratingPage() {
             exit={{ scale: 0.8, opacity: 0 }}
             className="relative"
           >
-            {/* Outer ring */}
             <div className="w-24 h-24 rounded-full border-2 border-violet-500/20 flex items-center justify-center">
-              {/* Spinning ring */}
               <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-violet-500 animate-spin" />
-              {/* Icon */}
               <span className="text-3xl">{currentStep.icon}</span>
             </div>
           </motion.div>
@@ -162,11 +205,18 @@ export default function GeneratingPage() {
              failReason}
           </motion.p>
         </AnimatePresence>
+
+        {/* Elapsed time indicator */}
+        {status === 'running' && elapsedSec > 5 && (
+          <p className="text-xs text-gray-700 mt-2">
+            {elapsedSec}s elapsed {elapsedSec > 45 && '· AI Engine may be waking up...'}
+          </p>
+        )}
       </div>
 
       {/* ── Progress Bar ── */}
       {status === 'running' && (
-        <div className="w-full max-w-sm space-y-3">
+        <div className="w-full max-w-md space-y-3">
           <div className="flex justify-between text-xs">
             <span className="text-gray-600">Progress</span>
             <span className="text-violet-400 font-medium">{progress}%</span>
@@ -176,7 +226,7 @@ export default function GeneratingPage() {
             <motion.div
               className="h-full bg-gradient-to-r from-violet-600 to-violet-400 rounded-full"
               animate={{ width: `${progress}%` }}
-              transition={{ duration: 0.3, ease: 'easeOut' }}
+              transition={{ duration: 0.5, ease: 'easeOut' }}
             />
           </div>
 
@@ -184,7 +234,7 @@ export default function GeneratingPage() {
           <div className="flex flex-wrap gap-2 justify-center mt-4">
             {PROGRESS_STEPS.map((s, i) => {
               const done    = progress >= s.max;
-              const current = progress >= s.min && progress < s.max;
+              const current = s.key === currentStepKey || (progress >= s.min && progress < s.max);
               return (
                 <div
                   key={i}
@@ -194,7 +244,7 @@ export default function GeneratingPage() {
                     ${done
                       ? 'bg-violet-500/20 border-violet-500/30 text-violet-300'
                       : current
-                      ? 'bg-violet-600/30 border-violet-500/50 text-white'
+                      ? 'bg-violet-600/30 border-violet-500/50 text-white shadow-lg shadow-violet-500/20'
                       : 'bg-white/3 border-white/8 text-gray-600'
                     }
                   `}
@@ -202,6 +252,9 @@ export default function GeneratingPage() {
                   <span>{s.icon}</span>
                   <span>{s.label}</span>
                   {done && <span className="text-violet-400">✓</span>}
+                  {current && !done && (
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse ml-1" />
+                  )}
                 </div>
               );
             })}
@@ -213,10 +266,10 @@ export default function GeneratingPage() {
       {status === 'failed' && (
         <div className="flex gap-3">
           <button
-            onClick={() => router.back()}
+            onClick={() => router.push('/content/new')}
             className="px-5 py-2.5 text-sm text-gray-400 border border-white/10 rounded-xl hover:border-white/20 transition-all"
           >
-            ← Go Back
+            ← Try Again
           </button>
           <button
             onClick={() => router.replace(`/content/${id}`)}

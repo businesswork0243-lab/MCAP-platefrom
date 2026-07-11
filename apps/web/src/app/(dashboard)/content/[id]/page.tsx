@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
@@ -9,75 +9,63 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import {
   ArrowLeft, Copy, Download, RefreshCw, CheckCircle,
-  XCircle, BarChart2, AlertTriangle
+  XCircle, BarChart2, AlertTriangle, Lock
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Artifact {
-  id: string;
-  request_id?: string;
-  content_type?: string;
-  agent_type?: string;
-  body?: string;
-  content?: string;
-  version?: number;
-  status?: string;
-  quality_score?: Record<string, unknown>;
-  metadata?: Record<string, unknown>;
-  created_at?: string;
+  id:              string;
+  request_id?:     string;
+  content_type?:   string;
+  agent_type?:     string;
+  body?:           string;
+  content?:        string;
+  version?:        number;
+  status?:         string;
+  quality_score?:  Record<string, unknown>;
+  metadata?:       Record<string, unknown> | string;
+  created_at?:     string;
 }
 
 interface ContentRequest {
-  id: string;
-  topic?: string;
-  status?: string;
-  metadata?: {
-    qualityScore?: number;
-    overallScore?: number;
-    brandScore?: number;
-    readabilityScore?: number;
-    platformScore?: number;
-    structureScore?: number;
-    humanizationScore?: number;
-    consistencyScore?: number;
-    clarityScore?: number;
-    engagementScore?: number;
-    ctaScore?: number;
-    flags?: string[];
-  };
+  id:         string;
+  topic?:     string;
+  status?:    string;
+  platforms?: string[] | string;  // Which platforms user selected
+  metadata?:  Record<string, any>;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const PLATFORM_LABELS: Record<string, string> = {
-  canonical: '📄 Canonical Draft',
-  linkedin_post: '💼 LinkedIn Post',
-  linkedin_article: '📰 LinkedIn Article',
-  x_post: '🐦 X Post',
-  x_thread: '🧵 X Thread',
-  twitter_thread: '🧵 Twitter Thread',
-  twitter_post: '🐦 Twitter Post',
-  blog_post: '📝 Blog Post',
-  blog: '📝 Blog Post',
-  newsletter: '📧 Newsletter',
-  instagram_caption: '📸 Instagram Caption',
-  instagram_post: '📸 Instagram Post',
-  youtube_script: '🎬 YouTube Script',
-};
+const ALL_PLATFORMS = [
+  { key: 'canonical',         label: '📄 Canonical Draft',   isBase: true },
+  { key: 'linkedin_post',     label: '💼 LinkedIn Post'                    },
+  { key: 'linkedin_article',  label: '📰 LinkedIn Article'                 },
+  { key: 'x_post',            label: '🐦 X Post'                           },
+  { key: 'x_thread',          label: '🧵 X Thread'                         },
+  { key: 'twitter_post',      label: '🐦 Twitter Post'                     },
+  { key: 'twitter_thread',    label: '🧵 Twitter Thread'                   },
+  { key: 'blog_post',         label: '📝 Blog Post'                        },
+  { key: 'blog',              label: '📝 Blog'                             },
+  { key: 'newsletter',        label: '📧 Newsletter'                       },
+  { key: 'instagram_caption', label: '📸 Instagram Caption'                },
+  { key: 'instagram_post',    label: '📸 Instagram Post'                   },
+  { key: 'youtube_script',    label: '🎬 YouTube Script'                   },
+];
 
-const STATUS_COLORS: Record<string, 'success' | 'warning' | 'destructive' | 'secondary' | 'outline'> = {
-  approved: 'success',
-  published: 'success',
-  completed: 'success',
-  awaiting_review: 'warning',
-  awaiting_qa: 'warning',
-  running: 'warning',
-  processing: 'warning',
-  queued: 'secondary',
-  failed: 'destructive',
+const STATUS_COLORS: Record<string, any> = {
+  approved:          'success',
+  published:         'success',
+  completed:         'success',
+  awaiting_review:   'warning',
+  awaiting_qa:       'warning',
+  running:           'warning',
+  processing:        'warning',
+  queued:            'secondary',
+  failed:            'destructive',
   generation_failed: 'destructive',
-  draft: 'secondary',
+  draft:             'secondary',
 };
 
 // ─── Safe Helpers ─────────────────────────────────────────────────────────────
@@ -98,9 +86,36 @@ function getArtifactContent(artifact: Artifact | undefined | null): string {
   return artifact.body || artifact.content || '';
 }
 
-function getArtifactType(artifact: Artifact | undefined | null): string {
-  if (!artifact) return 'unknown';
+function getArtifactPlatform(artifact: Artifact): string {
+  // Try metadata first (where we store platform)
+  if (artifact.metadata) {
+    const meta = typeof artifact.metadata === 'string' 
+      ? (() => { try { return JSON.parse(artifact.metadata); } catch { return {}; } })()
+      : artifact.metadata;
+    
+    if (meta?.platform) return String(meta.platform);
+  }
+  
+  // Try content_type
+  if (artifact.content_type) return artifact.content_type;
+  
+  return 'unknown';
+}
+
+function getArtifactAgentType(artifact: Artifact): string {
   return artifact.agent_type || artifact.content_type || 'unknown';
+}
+
+function parsePlatforms(raw: string[] | string | null | undefined): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw !== 'string') return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 // ─── Score Bar Component ──────────────────────────────────────────────────────
@@ -109,8 +124,8 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
   const safeValue = Math.max(0, Math.min(100, value || 0));
   const color =
     safeValue >= 80 ? 'bg-green-500'
-      : safeValue >= 60 ? 'bg-yellow-500'
-        : 'bg-red-500';
+    : safeValue >= 60 ? 'bg-yellow-500'
+    : 'bg-red-500';
 
   return (
     <div className="space-y-1">
@@ -145,14 +160,106 @@ export default function ContentWorkspacePage() {
     retry: 2,
   });
 
-  // Mutations
+  // ── Safe Data Extraction ──────────────────────────────────────────────────
+  const request: ContentRequest | undefined = data?.request;
+  const artifacts: Artifact[] = useMemo(() => {
+    const raw = data?.artifacts ?? [];
+    return Array.isArray(raw) ? raw.filter(Boolean) : [];
+  }, [data]);
+
+  // ── Get user's selected platforms ─────────────────────────────────────────
+  const selectedPlatforms = useMemo(() => {
+    return parsePlatforms(request?.platforms);
+  }, [request]);
+
+  // ── Get platforms that actually have content ──────────────────────────────
+  const availablePlatforms = useMemo(() => {
+    const set = new Set<string>();
+    
+    // Canonical is always available if any artifact exists
+    if (artifacts.length > 0) set.add('canonical');
+    
+    // Add platforms that have artifacts
+    artifacts.forEach(a => {
+      const platform = getArtifactPlatform(a);
+      const agentType = getArtifactAgentType(a);
+      
+      if (platform && platform !== 'unknown' && platform !== 'canonical') {
+        set.add(platform);
+      }
+      
+      // Canonical writer artifacts
+      if (agentType.includes('canonical')) {
+        set.add('canonical');
+      }
+    });
+    
+    return set;
+  }, [artifacts]);
+
+  // ── Set initial active tab to first available ─────────────────────────────
+  useEffect(() => {
+    if (artifacts.length > 0 && !availablePlatforms.has(activeTab)) {
+      // Switch to first available platform
+      const first = Array.from(availablePlatforms)[0];
+      if (first) setActiveTab(first);
+    }
+  }, [artifacts, availablePlatforms]);
+
+  // ── Find active artifact - STRICT MATCHING ────────────────────────────────
+  const activeArtifact = useMemo((): Artifact | null => {
+    if (artifacts.length === 0) return null;
+    
+    if (activeTab === 'canonical') {
+      // Find canonical draft
+      const canonical = artifacts.find(a => {
+        const agentType = getArtifactAgentType(a).toLowerCase();
+        const platform = getArtifactPlatform(a).toLowerCase();
+        return (
+          agentType === 'canonical' ||
+          agentType === 'canonical_writer' ||
+          platform === 'canonical'
+        );
+      });
+      
+      return canonical || null;
+    }
+    
+    // For platform-specific tabs: STRICT match only
+    // Find best artifact for this platform (prefer qa_reviewed > humanized > brand_aligned > platform_adapted)
+    const platformArtifacts = artifacts.filter(a => {
+      const platform = getArtifactPlatform(a).toLowerCase();
+      return platform === activeTab.toLowerCase();
+    });
+    
+    if (platformArtifacts.length === 0) return null;
+    
+    // Priority order
+    const priorityOrder = ['qa_reviewed', 'humanized', 'brand_aligned', 'platform_adapted'];
+    
+    for (const priority of priorityOrder) {
+      const found = platformArtifacts.find(a => {
+        const type = getArtifactAgentType(a).toLowerCase();
+        return type === priority || type.includes(priority);
+      });
+      if (found) return found;
+    }
+    
+    // Fallback: latest version for this platform
+    return platformArtifacts[platformArtifacts.length - 1];
+  }, [artifacts, activeTab]);
+
+  const content = getArtifactContent(activeArtifact);
+  const hasContent = !!content && content.trim().length > 0;
+  const isPlatformAvailable = availablePlatforms.has(activeTab);
+  const wasSelected = activeTab === 'canonical' || selectedPlatforms.includes(activeTab);
+
+  // ── Mutations ─────────────────────────────────────────────────────────────
   const approveMutation = useMutation({
     mutationFn: (action: 'approve' | 'reject') => {
-      // Find first artifact to approve
-      const artifactId = artifacts[0]?.id;
-      if (!artifactId) throw new Error('No artifact to approve');
+      if (!activeArtifact?.id) throw new Error('No artifact selected');
       const endpoint = action === 'approve' ? 'approve' : 'reject';
-      return api.post(`/content/${id}/artifacts/${artifactId}/${endpoint}`);
+      return api.post(`/content/${id}/artifacts/${activeArtifact.id}/${endpoint}`);
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['content', id] }),
   });
@@ -172,32 +279,7 @@ export default function ContentWorkspacePage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['content', id] }),
   });
 
-  // ── Safe Data Extraction ──────────────────────────────────────────────────
-  const request: ContentRequest | undefined = data?.request;
-  const artifacts: Artifact[] = useMemo(() => {
-    const raw = data?.artifacts ?? [];
-    return Array.isArray(raw) ? raw.filter(Boolean) : [];
-  }, [data]);
-
-  // Find active artifact safely
-  const activeArtifact = useMemo(() => {
-    if (artifacts.length === 0) return null;
-
-    // Try to find matching artifact
-    const found = artifacts.find((a) => {
-      const type = getArtifactType(a);
-      // Match various naming patterns
-      if (type === activeTab) return true;
-      if (activeTab === 'canonical' && (type === 'canonical' || type === 'canonical_writer')) return true;
-      return false;
-    });
-
-    // Fallback: return latest artifact
-    return found || artifacts[artifacts.length - 1];
-  }, [artifacts, activeTab]);
-
-  const content = getArtifactContent(activeArtifact);
-
+  // Copy handler
   const copyContent = () => {
     if (!content) return;
     navigator.clipboard.writeText(content);
@@ -241,13 +323,14 @@ export default function ContentWorkspacePage() {
 
   const statusColor = STATUS_COLORS[request.status || ''] || 'outline';
   const statusLabel = safeReplace(request.status, /_/g, ' ') || 'Unknown';
+  const activePlatformLabel = ALL_PLATFORMS.find(p => p.key === activeTab)?.label || activeTab;
 
   return (
     <div className="h-full flex flex-col">
       {/* ═══ Top Bar ═══ */}
       <div className="h-14 border-b px-6 flex items-center gap-4 shrink-0">
         <button
-          onClick={() => router.back()}
+          onClick={() => router.push('/content')}
           className="text-muted-foreground hover:text-foreground transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />
@@ -257,7 +340,7 @@ export default function ContentWorkspacePage() {
           {safeString(request.topic, 'Untitled Content')}
         </h1>
 
-        <Badge variant={statusColor as 'default' | 'destructive' | 'outline' | 'secondary' | undefined}>
+        <Badge variant={statusColor}>
           {statusLabel}
         </Badge>
 
@@ -268,7 +351,7 @@ export default function ContentWorkspacePage() {
           </div>
         )}
 
-        <Button variant="outline" size="sm" onClick={copyContent}>
+        <Button variant="outline" size="sm" onClick={copyContent} disabled={!hasContent}>
           <Download className="w-3.5 h-3.5 mr-1" />
           Export
         </Button>
@@ -276,27 +359,42 @@ export default function ContentWorkspacePage() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* ═══ Left Panel — Platform Tabs ═══ */}
-        <div className="w-48 border-r bg-muted/30 py-3 shrink-0 overflow-y-auto">
-          {Object.entries(PLATFORM_LABELS).map(([key, label]) => {
-            // Check if this platform has content
-            const hasContent = artifacts.some((a) => {
-              const type = getArtifactType(a);
-              return type === key || (key === 'canonical' && type.includes('canonical'));
-            });
+        <div className="w-56 border-r bg-muted/30 py-3 shrink-0 overflow-y-auto">
+          {/* Info banner */}
+          <div className="px-4 pb-3 mb-2 border-b">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold">
+              Available Content
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {availablePlatforms.size} of {ALL_PLATFORMS.length} formats generated
+            </p>
+          </div>
+
+          {ALL_PLATFORMS.map((platform) => {
+            const isAvailable = availablePlatforms.has(platform.key);
+            const wasUserSelected = platform.isBase || selectedPlatforms.includes(platform.key);
+            const isActive = activeTab === platform.key;
 
             return (
               <button
-                key={key}
-                onClick={() => setActiveTab(key)}
+                key={platform.key}
+                onClick={() => setActiveTab(platform.key)}
                 className={cn(
-                  'w-full text-left px-4 py-2.5 text-sm transition-colors',
-                  activeTab === key
+                  'w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between group',
+                  isActive
                     ? 'bg-primary/10 text-primary font-medium border-r-2 border-primary'
-                    : 'text-muted-foreground hover:bg-accent hover:text-foreground',
-                  !hasContent && 'opacity-50'
+                    : isAvailable
+                      ? 'text-foreground hover:bg-accent'
+                      : 'text-muted-foreground/50 hover:bg-accent/50'
                 )}
               >
-                {label}
+                <span className="truncate">{platform.label}</span>
+                
+                {isAvailable ? (
+                  <span className="text-green-500 text-xs shrink-0 ml-2">●</span>
+                ) : (
+                  <Lock className="w-3 h-3 shrink-0 ml-2 text-muted-foreground/40" />
+                )}
               </button>
             );
           })}
@@ -306,68 +404,99 @@ export default function ContentWorkspacePage() {
         <div className="flex-1 flex flex-col overflow-hidden">
           <div className="flex items-center justify-between px-6 py-3 border-b">
             <span className="text-sm font-medium">
-              {PLATFORM_LABELS[activeTab] || activeTab}
+              {activePlatformLabel}
             </span>
-            <Button variant="ghost" size="sm" onClick={copyContent} disabled={!content}>
+            <Button variant="ghost" size="sm" onClick={copyContent} disabled={!hasContent}>
               <Copy className="w-3.5 h-3.5 mr-1" />
               {copied ? 'Copied!' : 'Copy'}
             </Button>
           </div>
 
           <div className="flex-1 overflow-y-auto p-6">
-            {content ? (
+            {hasContent ? (
               <div className="prose prose-sm max-w-none">
                 <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-foreground">
                   {content}
                 </pre>
               </div>
             ) : (
-              <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
-                <p className="text-sm">No content for this platform yet</p>
-                {artifacts.length > 0 && (
-                  <p className="text-xs mt-2">
-                    Available: {artifacts.map(a => getArtifactType(a)).join(', ')}
-                  </p>
-                )}
-              </div>
+              <EmptyContentState
+                platform={activeTab}
+                platformLabel={activePlatformLabel}
+                wasSelected={wasSelected}
+                selectedPlatforms={selectedPlatforms}
+                onRegenerate={() => rerunMutation.mutate()}
+                isRegenerating={rerunMutation.isPending}
+              />
             )}
           </div>
 
-          {/* Agent Actions */}
-          <div className="border-t px-6 py-3 flex items-center gap-2 flex-wrap">
-            <span className="text-xs text-muted-foreground mr-2">Re-run:</span>
+          {/* Agent Actions - only show if content exists */}
+          {hasContent && (
+            <div className="border-t px-6 py-3 flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-muted-foreground mr-2">Actions:</span>
 
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => rerunMutation.mutate()}
-              disabled={rerunMutation.isPending}
-            >
-              <RefreshCw className={cn('w-3 h-3 mr-1', rerunMutation.isPending && 'animate-spin')} />
-              Regenerate
-            </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => rerunMutation.mutate()}
+                disabled={rerunMutation.isPending}
+              >
+                <RefreshCw className={cn('w-3 h-3 mr-1', rerunMutation.isPending && 'animate-spin')} />
+                Regenerate All
+              </Button>
 
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => rehumanizeMutation.mutate()}
-              disabled={rehumanizeMutation.isPending}
-            >
-              <RefreshCw className={cn('w-3 h-3 mr-1', rehumanizeMutation.isPending && 'animate-spin')} />
-              Re-humanize
-            </Button>
-          </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => rehumanizeMutation.mutate()}
+                disabled={rehumanizeMutation.isPending}
+              >
+                <RefreshCw className={cn('w-3 h-3 mr-1', rehumanizeMutation.isPending && 'animate-spin')} />
+                Re-humanize
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* ═══ Right Panel — Intelligence Sidebar ═══ */}
         <div className="w-64 border-l shrink-0 overflow-y-auto p-4 space-y-5">
+          {/* Content Info */}
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+              Generated Formats
+            </h3>
+            <div className="space-y-1.5 text-xs">
+              {selectedPlatforms.length === 0 ? (
+                <p className="text-muted-foreground">No platforms selected</p>
+              ) : (
+                selectedPlatforms.map(p => {
+                  const label = ALL_PLATFORMS.find(pl => pl.key === p)?.label || p;
+                  const isGenerated = availablePlatforms.has(p);
+                  return (
+                    <div key={p} className="flex items-center gap-2">
+                      {isGenerated ? (
+                        <CheckCircle className="w-3.5 h-3.5 text-green-500 shrink-0" />
+                      ) : (
+                        <div className="w-3.5 h-3.5 rounded-full border border-muted-foreground shrink-0" />
+                      )}
+                      <span className={isGenerated ? '' : 'text-muted-foreground'}>
+                        {label}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
           {/* Quality Scores */}
           <div>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
               Quality Scores
             </h3>
             <div className="space-y-2.5">
-              <ScoreBar label="Overall" value={request.metadata?.overallScore ?? 0} />
+              <ScoreBar label="Overall" value={score} />
               <div className="border-t my-2" />
               <ScoreBar label="Brand (20%)" value={request.metadata?.brandScore ?? 0} />
               <ScoreBar label="Readability (15%)" value={request.metadata?.readabilityScore ?? 0} />
@@ -399,37 +528,36 @@ export default function ContentWorkspacePage() {
                   </div>
                 ))
               )}
-              <div className="flex items-center gap-2 text-xs text-green-600">
-                <CheckCircle className="w-3.5 h-3.5" /> Structure validated
-              </div>
             </div>
           </div>
 
           {/* Approval */}
-          <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
-              Approval
-            </h3>
-            <div className="flex flex-col gap-2">
-              <Button
-                size="sm"
-                className="w-full"
-                onClick={() => approveMutation.mutate('approve')}
-                disabled={approveMutation.isPending || request.status === 'approved'}
-              >
-                <CheckCircle className="w-3.5 h-3.5 mr-1" /> Approve
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="w-full text-destructive hover:bg-destructive/10"
-                onClick={() => approveMutation.mutate('reject')}
-                disabled={approveMutation.isPending}
-              >
-                <XCircle className="w-3.5 h-3.5 mr-1" /> Reject
-              </Button>
+          {hasContent && (
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+                Approval
+              </h3>
+              <div className="flex flex-col gap-2">
+                <Button
+                  size="sm"
+                  className="w-full"
+                  onClick={() => approveMutation.mutate('approve')}
+                  disabled={approveMutation.isPending || request.status === 'approved'}
+                >
+                  <CheckCircle className="w-3.5 h-3.5 mr-1" /> Approve
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full text-destructive hover:bg-destructive/10"
+                  onClick={() => approveMutation.mutate('reject')}
+                  disabled={approveMutation.isPending}
+                >
+                  <XCircle className="w-3.5 h-3.5 mr-1" /> Reject
+                </Button>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Version History */}
           <div>
@@ -441,7 +569,8 @@ export default function ContentWorkspacePage() {
                 <p className="text-xs text-muted-foreground">No versions yet</p>
               ) : (
                 artifacts.slice().reverse().map((a, i) => {
-                  const type = getArtifactType(a);
+                  const type = getArtifactAgentType(a);
+                  const platform = getArtifactPlatform(a);
                   const displayName = safeReplace(type, /_/g, ' ');
                   return (
                     <div
@@ -452,9 +581,14 @@ export default function ContentWorkspacePage() {
                       <span className="flex-1 truncate capitalize">
                         {displayName || 'Unknown'}
                       </span>
+                      {platform !== 'unknown' && platform !== 'canonical' && (
+                        <span className="text-[9px] text-muted-foreground truncate max-w-[60px]">
+                          {platform.slice(0, 8)}
+                        </span>
+                      )}
                       {i === 0 && (
                         <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                          current
+                          latest
                         </Badge>
                       )}
                     </div>
@@ -465,6 +599,92 @@ export default function ContentWorkspacePage() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Empty Content State Component ────────────────────────────────────────────
+
+function EmptyContentState({
+  platform,
+  platformLabel,
+  wasSelected,
+  selectedPlatforms,
+  onRegenerate,
+  isRegenerating,
+}: {
+  platform: string;
+  platformLabel: string;
+  wasSelected: boolean;
+  selectedPlatforms: string[];
+  onRegenerate: () => void;
+  isRegenerating: boolean;
+}) {
+  if (!wasSelected) {
+    // Platform wasn't selected during generation
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-center max-w-md mx-auto">
+        <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4">
+          <Lock className="w-8 h-8 text-muted-foreground" />
+        </div>
+        
+        <h3 className="text-lg font-semibold text-foreground mb-2">
+          {platformLabel} not generated
+        </h3>
+        
+        <p className="text-sm text-muted-foreground mb-4">
+          This format was not selected when creating the content.
+        </p>
+        
+        <div className="bg-muted/30 border border-border rounded-lg p-4 mb-6 w-full">
+          <p className="text-xs text-muted-foreground mb-2 font-medium">
+            Selected platforms:
+          </p>
+          <div className="flex flex-wrap gap-1.5 justify-center">
+            {selectedPlatforms.map(p => (
+              <Badge key={p} variant="secondary" className="text-xs">
+                {p.replace(/_/g, ' ')}
+              </Badge>
+            ))}
+          </div>
+        </div>
+        
+        <p className="text-xs text-muted-foreground mb-4">
+          To generate this format, create new content and include {platformLabel.toLowerCase()} in your selection.
+        </p>
+        
+        <Button
+          onClick={onRegenerate}
+          disabled={isRegenerating}
+          variant="outline"
+        >
+          <RefreshCw className={cn('w-3.5 h-3.5 mr-1', isRegenerating && 'animate-spin')} />
+          Regenerate All Formats
+        </Button>
+      </div>
+    );
+  }
+
+  // Platform was selected but content missing (error case)
+  return (
+    <div className="flex flex-col items-center justify-center h-full text-center max-w-md mx-auto">
+      <AlertTriangle className="w-12 h-12 text-yellow-500 mb-4" />
+      
+      <h3 className="text-lg font-semibold text-foreground mb-2">
+        Content generation incomplete
+      </h3>
+      
+      <p className="text-sm text-muted-foreground mb-6">
+        {platformLabel} was selected but content generation may have failed for this format.
+      </p>
+      
+      <Button
+        onClick={onRegenerate}
+        disabled={isRegenerating}
+      >
+        <RefreshCw className={cn('w-3.5 h-3.5 mr-1', isRegenerating && 'animate-spin')} />
+        Try Regenerating
+      </Button>
     </div>
   );
 }

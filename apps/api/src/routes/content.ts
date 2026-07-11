@@ -458,9 +458,9 @@ contentRouter.get('/jobs/:id', async (req: AuthenticatedRequest, res: Response):
 
 // ─── GET /api/content/:id (Single content with artifacts) ─────────────────────
 
+// GET /api/content/:id (FIXED - proper artifact structure)
 contentRouter.get('/:id', async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    // UUID validation
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!uuidRegex.test(req.params.id)) {
       res.status(400).json({ error: 'Invalid content ID format' });
@@ -484,13 +484,15 @@ contentRouter.get('/:id', async (req: AuthenticatedRequest, res: Response): Prom
       return;
     }
 
-    // Fetch artifacts (with correct column mapping)
+    // Fetch artifacts with FULL metadata
     const artifacts = await query(
       `SELECT 
          a.id,
          a.content_request_id as request_id,
          a.agent_type as content_type,
+         a.agent_type,
          a.content as body,
+         a.content,
          a.version,
          a.status,
          a.quality_score,
@@ -507,7 +509,23 @@ contentRouter.get('/:id', async (req: AuthenticatedRequest, res: Response): Prom
       [req.params.id]
     );
 
-    // Fetch agent executions
+    // Parse metadata JSON in each artifact
+    const parsedArtifacts = artifacts.map((a: any) => {
+      let parsedMetadata = a.metadata;
+      if (typeof parsedMetadata === 'string') {
+        try {
+          parsedMetadata = JSON.parse(parsedMetadata);
+        } catch {
+          parsedMetadata = {};
+        }
+      }
+      return {
+        ...a,
+        metadata: parsedMetadata,
+      };
+    });
+
+    // Fetch executions
     let executions: Record<string, unknown>[] = [];
     try {
       executions = await query(
@@ -529,13 +547,13 @@ contentRouter.get('/:id', async (req: AuthenticatedRequest, res: Response): Prom
 
     res.json({
       request,
-      artifacts,
+      artifacts: parsedArtifacts,
       executions,
       meta: {
         isComplete: ['completed', 'approved', 'awaiting_review'].includes(request.status as string),
         isFailed:   ['failed', 'generation_failed'].includes(request.status as string),
         isProcessing: ['queued', 'running', 'processing'].includes(request.status as string),
-        totalArtifacts: artifacts.length,
+        totalArtifacts: parsedArtifacts.length,
       },
     });
   } catch (err) {
@@ -731,8 +749,8 @@ contentRouter.post('/:id/rehumanize', async (req: AuthenticatedRequest, res: Res
     }
 
     // Get latest artifact
-    const artifact = await queryOne<{ content: string; agent_type: string }>(
-      `SELECT content, agent_type FROM artifacts
+    const artifact = await queryOne<{ content: string; agent_type: string; metadata: any }>(
+      `SELECT content, agent_type, metadata FROM artifacts
        WHERE content_request_id = $1
        ORDER BY created_at DESC LIMIT 1`,
       [req.params.id]
@@ -754,13 +772,28 @@ contentRouter.post('/:id/rehumanize', async (req: AuthenticatedRequest, res: Res
       { timeout: 60_000 }
     );
 
+    // Determine platform
+    let platform = 'canonical';
+    if (artifact.metadata) {
+      try {
+        const meta = typeof artifact.metadata === 'string'
+          ? JSON.parse(artifact.metadata)
+          : artifact.metadata;
+        if (meta?.platform) platform = meta.platform;
+      } catch {}
+    }
+
     // Save new artifact
     const newArtifactId = uuidv4();
+    const newMetadata = {
+      platform,
+      contentType: 'humanized',
+    };
     await query(
       `INSERT INTO artifacts
-        (id, content_request_id, agent_type, content, status, version)
-       VALUES ($1, $2, 'humanized', $3, 'generated', 1)`,
-      [newArtifactId, req.params.id, response.data.content]
+        (id, content_request_id, agent_type, content, status, metadata, version)
+       VALUES ($1, $2, 'humanized', $3, 'generated', $4, 1)`,
+      [newArtifactId, req.params.id, response.data.content, JSON.stringify(newMetadata)]
     );
 
     res.json({

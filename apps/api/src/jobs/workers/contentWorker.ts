@@ -120,34 +120,45 @@ async function logAgentExecution(
   }
 }
 
-// ── Save Artifact (FIXED - Match actual DB schema) ────────────────────────────
+// ── Save Artifact (CRITICAL - includes platform in metadata) ─────────────────
 
 async function saveArtifact(
   requestId: string,
   platform: string,
   contentType: string,
   body: string,
-  metadata: Record<string, unknown> = {}
+  extraMetadata: Record<string, unknown> = {}
 ): Promise<string> {
   const id = uuidv4();
 
+  const metadata = {
+    platform,           // ← CRITICAL: Store platform here
+    contentType,        // ← Also store type
+    ...extraMetadata,
+  };
+
   try {
-    // ✅ Actual column names use karo
     await query(
       `INSERT INTO artifacts
         (id, content_request_id, agent_type, content, status, metadata, version)
        VALUES ($1, $2, $3, $4, 'generated', $5, 1)`,
       [
         id,
-        requestId,           // content_request_id
-        contentType,         // agent_type (e.g., 'canonical', 'humanized')
-        body,                // content
-        JSON.stringify({ 
-          ...metadata, 
-          platform  // Store platform in metadata
-        }),
+        requestId,
+        contentType,                    // agent_type
+        body,                           // content
+        JSON.stringify(metadata),       // metadata (with platform!)
       ]
     );
+    
+    logger.debug('Artifact saved', { 
+      id, 
+      requestId, 
+      platform, 
+      contentType,
+      bodyLength: body.length 
+    });
+    
     return id;
   } catch (err) {
     logger.error('Failed to save artifact:', { requestId, platform, err });
@@ -217,7 +228,44 @@ async function callFullPipeline(
   return response.data;
 }
 
-// ── Main Job Processor ────────────────────────────────────────────────────────
+// ── Progress Milestones ────────────────────────────────────────────────────────
+const PROGRESS = {
+  QUEUED:              5,
+  WAKING_AI:           10,
+  FETCHING_BRAND:      20,
+  CANONICAL_START:     30,
+  CANONICAL_DONE:      45,
+  PLATFORM_START:      50,
+  PLATFORM_DONE:       65,
+  BRAND_START:         70,
+  BRAND_DONE:          78,
+  HUMANIZE_START:      82,
+  HUMANIZE_DONE:       90,
+  QA_START:            92,
+  QA_DONE:             96,
+  SAVING:              98,
+  COMPLETE:            100,
+} as const;
+
+// Helper to emit progress
+function emitProgress(
+  orgId: string,
+  requestId: string,
+  progress: number,
+  step: string,
+  extra: Record<string, unknown> = {}
+): void {
+  emitToOrg(orgId, 'content:progress', {
+    requestId,
+    progress,
+    step,
+    ...extra,
+  });
+  
+  logger.debug('Progress emitted', { requestId, progress, step });
+}
+
+// ── Main Job Processor (UPDATED) ──────────────────────────────────────────────
 
 async function processContentJob(job: Job<ContentJobData>): Promise<void> {
   const { requestId, organizationId } = job.data;
@@ -230,43 +278,61 @@ async function processContentJob(job: Job<ContentJobData>): Promise<void> {
     attempt: job.attemptsMade + 1,
   });
 
-  // Step 1: Mark as processing
+  // Step 1: Queued
   await updateRequestStatus(requestId, 'running');
-  
-  emitToOrg(organizationId, 'content:status', {
-    requestId,
-    status: 'running',
-    step: 'initializing',
-    progress: 5,
-  });
+  emitProgress(organizationId, requestId, PROGRESS.QUEUED, 'initializing');
 
   try {
-    // Step 2: Wake up AI Engine
-    emitToOrg(organizationId, 'content:status', {
-      requestId,
-      status: 'running',
-      step: 'waking_ai_engine',
-      progress: 10,
-    });
+    // Step 2: Wake AI Engine
+    emitProgress(organizationId, requestId, PROGRESS.WAKING_AI, 'waking_ai_engine');
 
     const isAwake = await wakeUpAIEngine();
     if (!isAwake) {
       throw new Error('AI Engine is not responding. Service may be down.');
     }
 
-    // Step 3: Log start of canonical writing
-    await logAgentExecution(requestId, 'canonical_writer', 'started');
+    // Step 3: Fetching context
+    emitProgress(organizationId, requestId, PROGRESS.FETCHING_BRAND, 'fetching_brand_context');
     
-    emitToOrg(organizationId, 'content:status', {
-      requestId,
-      status: 'running',
-      step: 'generating_content',
-      progress: 30,
-    });
+    // Small delay for UI feedback
+    await new Promise(r => setTimeout(r, 500));
 
-    // Step 4: Call full pipeline
+    // Step 4: Start canonical writing
+    emitProgress(organizationId, requestId, PROGRESS.CANONICAL_START, 'writing_canonical_draft');
+    await logAgentExecution(requestId, 'canonical_writer', 'started');
+
+    // Step 5: Call full pipeline (this takes ~30-40 seconds)
     const pipelineStart = Date.now();
-    const result = await callFullPipeline(job.data);
+    
+    // Emit intermediate progress during pipeline call
+    const progressInterval = setInterval(() => {
+      const elapsed = Date.now() - pipelineStart;
+      
+      if (elapsed < 8000) {
+        // 0-8s: Canonical writing (30-45%)
+        emitProgress(organizationId, requestId, PROGRESS.CANONICAL_START + Math.floor(elapsed / 8000 * 15), 'writing_canonical_draft');
+      } else if (elapsed < 15000) {
+        // 8-15s: Platform optimization (50-65%)
+        emitProgress(organizationId, requestId, PROGRESS.PLATFORM_START + Math.floor((elapsed - 8000) / 7000 * 15), 'platform_optimization');
+      } else if (elapsed < 22000) {
+        // 15-22s: Brand alignment (70-78%)
+        emitProgress(organizationId, requestId, PROGRESS.BRAND_START + Math.floor((elapsed - 15000) / 7000 * 8), 'brand_alignment');
+      } else if (elapsed < 30000) {
+        // 22-30s: Humanization (82-90%)
+        emitProgress(organizationId, requestId, PROGRESS.HUMANIZE_START + Math.floor((elapsed - 22000) / 8000 * 8), 'humanizing_content');
+      } else {
+        // 30s+: QA (92-96%)
+        emitProgress(organizationId, requestId, Math.min(96, PROGRESS.QA_START + Math.floor((elapsed - 30000) / 10000 * 4)), 'quality_assurance');
+      }
+    }, 1500); // Update every 1.5 seconds
+
+    let result;
+    try {
+      result = await callFullPipeline(job.data);
+    } finally {
+      clearInterval(progressInterval);
+    }
+
     const pipelineDuration = Date.now() - pipelineStart;
 
     logger.info('✅ Pipeline completed', {
@@ -276,87 +342,49 @@ async function processContentJob(job: Job<ContentJobData>): Promise<void> {
       durationMs: pipelineDuration,
     });
 
-    // Step 5: Log all agent executions
     await logAgentExecution(requestId, 'canonical_writer', 'completed', {
       tokensUsed: result.totalTokensUsed,
       durationMs: pipelineDuration,
     });
 
-    emitToOrg(organizationId, 'content:status', {
-      requestId,
-      status: 'running',
-      step: 'saving_results',
-      progress: 90,
+    // Step 6: Saving results
+    emitProgress(organizationId, requestId, PROGRESS.SAVING, 'saving_results', {
+      artifactCount: result.artifacts.length,
+      totalTokens: result.totalTokensUsed,
     });
 
-    // Step 6: Save artifacts
+    // Save artifacts (existing code)
     for (const artifact of result.artifacts) {
-      // Canonical (once)
       if (artifact === result.artifacts[0]) {
-        await saveArtifact(
-          requestId,
-          'canonical',
-          'canonical',
-          result.canonicalDraft
-        );
+        await saveArtifact(requestId, 'canonical', 'canonical', result.canonicalDraft);
       }
 
-      // Platform variant
-      await saveArtifact(
-        requestId,
-        artifact.platform,
-        'platform_adapted',
-        artifact.platformVariant
-      );
+      await saveArtifact(requestId, artifact.platform, 'platform_adapted', artifact.platformVariant);
+      await saveArtifact(requestId, artifact.platform, 'brand_aligned', artifact.brandAligned);
 
-      // Brand aligned
-      await saveArtifact(
-        requestId,
-        artifact.platform,
-        'brand_aligned',
-        artifact.brandAligned
-      );
-
-      // Humanized
       if (artifact.humanized !== artifact.brandAligned) {
-        await saveArtifact(
-          requestId,
-          artifact.platform,
-          'humanized',
-          artifact.humanized
-        );
+        await saveArtifact(requestId, artifact.platform, 'humanized', artifact.humanized);
       }
 
-      // Final (with QA metadata)
-      await saveArtifact(
-        requestId,
-        artifact.platform,
-        'qa_reviewed',
-        artifact.finalContent,
-        {
-          qa: artifact.qa,
-          overallScore: artifact.overallScore,
-          passed: artifact.passed,
-        }
-      );
+      await saveArtifact(requestId, artifact.platform, 'qa_reviewed', artifact.finalContent, {
+        qa: artifact.qa,
+        overallScore: artifact.overallScore,
+        passed: artifact.passed,
+      });
     }
 
-    // Step 7: Update total tokens
+    // Update tokens
     await query(
-      `UPDATE content_requests
-       SET total_tokens_used = $1
-       WHERE id = $2`,
+      `UPDATE content_requests SET total_tokens_used = $1 WHERE id = $2`,
       [result.totalTokensUsed, requestId]
     );
 
-    // Step 8: Mark complete
     await updateRequestStatus(requestId, 'awaiting_review');
 
-    emitToOrg(organizationId, 'content:status', {
-      requestId,
-      status: 'completed',
-      step: 'done',
-      progress: 100,
+    // Step 7: Complete!
+    emitProgress(organizationId, requestId, PROGRESS.COMPLETE, 'completed', {
+      artifactCount: result.artifacts.length,
+      totalTokens: result.totalTokensUsed,
     });
 
     emitToOrg(organizationId, 'content:completed', {
@@ -405,13 +433,11 @@ async function processContentJob(job: Job<ContentJobData>): Promise<void> {
       durationMs: Date.now() - startTime,
     });
 
-    // Final attempt?
     const maxAttempts = job.opts.attempts || 3;
     const isFinalAttempt = job.attemptsMade + 1 >= maxAttempts;
 
     if (isFinalAttempt) {
       await updateRequestStatus(requestId, 'generation_failed', errorMsg);
-      
       emitToOrg(organizationId, 'content:failed', {
         requestId,
         error: errorMsg,

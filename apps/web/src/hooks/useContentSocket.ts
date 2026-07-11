@@ -1,123 +1,138 @@
 'use client';
 
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { tokenManager } from '@/lib/api';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface ProgressEvent {
-  jobId:    string;
-  progress: number;
-  step:     string;
-}
-
-interface CompletedEvent {
-  jobId:     string;
-  requestId: string;
-  message:   string;
-}
-
-interface FailedEvent {
-  jobId:     string;
-  requestId: string;
-  reason:    string;
-  message:   string;
-}
 
 interface UseContentSocketOptions {
-  requestId:   string;
-  onProgress?: (data: ProgressEvent) => void;
-  onCompleted?: (data: CompletedEvent) => void;
-  onFailed?:   (data: FailedEvent) => void;
-  enabled?:    boolean;
+  requestId:    string;
+  enabled?:     boolean;
+  onProgress?:  (data: { progress: number; step: string; [key: string]: unknown }) => void;
+  onCompleted?: (data: { requestId: string; artifactCount?: number; totalTokens?: number }) => void;
+  onFailed?:    (data: { requestId: string; reason?: string; error?: string }) => void;
 }
-
-// ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useContentSocket({
   requestId,
+  enabled = true,
   onProgress,
   onCompleted,
   onFailed,
-  enabled = true,
 }: UseContentSocketOptions) {
-  const socketRef      = useRef<Socket | null>(null);
-  const onProgressRef  = useRef(onProgress);
-  const onCompletedRef = useRef(onCompleted);
-  const onFailedRef    = useRef(onFailed);
-
-  // Keep callbacks fresh without re-connecting
-  useEffect(() => { onProgressRef.current  = onProgress;  }, [onProgress]);
-  useEffect(() => { onCompletedRef.current = onCompleted; }, [onCompleted]);
-  useEffect(() => { onFailedRef.current    = onFailed;    }, [onFailed]);
-
-  const connect = useCallback(() => {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL
-      ?.replace('/api', '')
-      ?? 'http://localhost:4000';
-
-    const token = tokenManager.get();
-
-    const socket = io(apiUrl, {
-      transports:  ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay:    1_000,
-      reconnectionDelayMax: 10_000,
-      timeout: 10_000,
-
-      auth: {
-        token: token ?? undefined,
-      },
-
-      query: {
-        requestId,
-      },
-    });
-
-    socket.on('connect', () => {
-      // Subscribe to this specific request
-      socket.emit('subscribe:request', requestId);
-    });
-
-    socket.on('connect_error', (err) => {
-      if (err.message === 'TOKEN_EXPIRED') {
-        // Disconnect — auth store will handle refresh
-        socket.disconnect();
-      }
-    });
-
-    socket.on('job:progress', (data: ProgressEvent) => {
-      onProgressRef.current?.(data);
-    });
-
-    socket.on('job:completed', (data: CompletedEvent) => {
-      onCompletedRef.current?.(data);
-      socket.disconnect(); // Done — no need to stay connected
-    });
-
-    socket.on('job:failed', (data: FailedEvent) => {
-      onFailedRef.current?.(data);
-      socket.disconnect();
-    });
-
-    return socket;
-  }, [requestId]);
+  const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
     if (!enabled || !requestId) return;
 
-    socketRef.current = connect();
+    // Get token from localStorage
+    const token = typeof window !== 'undefined' 
+      ? localStorage.getItem('accessToken') 
+      : null;
 
+    if (!token) {
+      console.warn('[Socket] No auth token, skipping connection');
+      return;
+    }
+
+    // Determine WS URL
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://mcap-api.onrender.com/api';
+    const wsUrl = apiUrl.replace(/\/api\/?$/, '');
+
+    console.log('[Socket] Connecting to', wsUrl);
+
+    // Create socket
+    const socket = io(wsUrl, {
+      auth: { token },
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+    });
+
+    socketRef.current = socket;
+
+    // ── Connection Events ─────────────────────────────────────────
+    socket.on('connect', () => {
+      console.log('[Socket] Connected:', socket.id);
+      
+      // Get org ID from localStorage or context
+      const authData = localStorage.getItem('mcap-auth');
+      let orgId = '';
+      if (authData) {
+        try {
+          const parsed = JSON.parse(authData);
+          orgId = parsed?.state?.user?.organizationId || '';
+        } catch {}
+      }
+
+      if (orgId) {
+        socket.emit('join:org', orgId);
+        console.log('[Socket] Joined org room:', orgId);
+      }
+
+      // Also join request-specific room
+      socket.emit('join:request', requestId);
+      console.log('[Socket] Joined request room:', requestId);
+    });
+
+    socket.on('joined', (data) => {
+      console.log('[Socket] Join confirmed:', data);
+    });
+
+    socket.on('disconnect', (reason) => {
+      console.log('[Socket] Disconnected:', reason);
+    });
+
+    socket.on('connect_error', (err) => {
+      console.error('[Socket] Connection error:', err.message);
+    });
+
+    // ── Content Events ────────────────────────────────────────────
+    
+    // Progress updates
+    socket.on('content:progress', (data) => {
+      if (data.requestId !== requestId) return;
+      
+      console.log('[Socket] Progress:', data.progress + '%', data.step);
+      onProgress?.(data);
+    });
+
+    // Also listen to legacy status event
+    socket.on('content:status', (data) => {
+      if (data.requestId !== requestId) return;
+      
+      console.log('[Socket] Status:', data);
+      if (typeof data.progress === 'number') {
+        onProgress?.(data);
+      }
+    });
+
+    // Completion
+    socket.on('content:completed', (data) => {
+      if (data.requestId !== requestId) return;
+      
+      console.log('[Socket] ✅ Completed:', data);
+      onCompleted?.(data);
+    });
+
+    // Failure
+    socket.on('content:failed', (data) => {
+      if (data.requestId !== requestId) return;
+      
+      console.error('[Socket] ❌ Failed:', data);
+      onFailed?.(data);
+    });
+
+    // ── Cleanup ───────────────────────────────────────────────────
     return () => {
-      socketRef.current?.disconnect();
+      console.log('[Socket] Cleaning up');
+      socket.off('content:progress');
+      socket.off('content:status');
+      socket.off('content:completed');
+      socket.off('content:failed');
+      socket.disconnect();
       socketRef.current = null;
     };
-  }, [enabled, requestId, connect]);
+  }, [requestId, enabled, onProgress, onCompleted, onFailed]);
 
-  return {
-    disconnect: () => socketRef.current?.disconnect(),
-    isConnected: () => socketRef.current?.connected ?? false,
-  };
+  return { socket: socketRef.current };
 }
