@@ -1,247 +1,202 @@
-import axios, { 
-  AxiosInstance, 
-  AxiosError, 
-  InternalAxiosRequestConfig 
-} from 'axios';
+'use client';
+
+import axios, { AxiosError, InternalAxiosRequestConfig, AxiosInstance } from 'axios';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://mcap-api.onrender.com/api';
 
-const TIMEOUT_MS = 30_000;        // 30 seconds
-const AI_TIMEOUT_MS = 120_000;    // 2 minutes (AI pipeline ke liye)
+const api = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 30_000,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+const aiApi = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 180_000, // 3 minutes timeout for AI processes
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
 
 // ── Token Management ──────────────────────────────────────────────────────────
-// Note: HttpOnly cookies use karna better hai for production
-// Abhi ke liye sessionStorage use karo (XSS se thoda better than localStorage)
 
-const TOKEN_KEY = 'mcap_token';
+const TOKEN_KEY = 'accessToken';
+const REFRESH_TOKEN_KEY = 'refreshToken';
 
-export const tokenManager = {
-  get: (): string | null => {
-    if (typeof window === 'undefined') return null;
-    return localStorage.getItem(TOKEN_KEY);
-  },
-  
-  set: (token: string): void => {
-    if (typeof window === 'undefined') return;
-    localStorage.setItem(TOKEN_KEY, token);
-  },
-  
-  clear: (): void => {
-    if (typeof window === 'undefined') return;
-    localStorage.removeItem(TOKEN_KEY);
-  },
-};
-
-// ── Token Refresh Queue ───────────────────────────────────────────────────────
-let isRefreshing = false;
-let failedQueue: Array<{
-  resolve: (token: string) => void;
-  reject:  (err: unknown) => void;
-}> = [];
-
-function processQueue(error: unknown, token: string | null = null) {
-  failedQueue.forEach(({ resolve, reject }) => {
-    if (error) {
-      reject(error);
-    } else {
-      resolve(token!);
-    }
-  });
-  failedQueue = [];
+function getAccessToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(TOKEN_KEY);
 }
 
-// ── Axios Instance Factory ────────────────────────────────────────────────────
+function getRefreshToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(REFRESH_TOKEN_KEY);
+}
 
-function createApiInstance(timeout: number = TIMEOUT_MS): AxiosInstance {
-  const instance = axios.create({
-    baseURL: API_BASE_URL,
-    timeout,
-    withCredentials: true,
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  });
+function setTokens(accessToken: string, refreshToken?: string): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(TOKEN_KEY, accessToken);
+  if (refreshToken) {
+    localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+  }
+}
 
-  // ── Request Interceptor ───────────────────────────────────────────────────
+function clearTokens(): void {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(REFRESH_TOKEN_KEY);
+}
+
+export const tokenManager = {
+  get: getAccessToken,
+  set: setTokens,
+  clear: clearTokens,
+};
+
+// ── Refresh Token Queue (prevent multiple simultaneous refreshes) ─────────────
+
+let isRefreshing = false;
+let refreshSubscribers: Array<(token: string) => void> = [];
+
+function onTokenRefreshed(newToken: string) {
+  refreshSubscribers.forEach(callback => callback(newToken));
+  refreshSubscribers = [];
+}
+
+function addRefreshSubscriber(callback: (token: string) => void) {
+  refreshSubscribers.push(callback);
+}
+
+// ── Setup Interceptors Helper ─────────────────────────────────────────────────
+
+function registerInterceptors(instance: AxiosInstance) {
   instance.interceptors.request.use(
     (config: InternalAxiosRequestConfig) => {
-      const token = tokenManager.get();
+      const token = getAccessToken();
       if (token) {
         config.headers.Authorization = `Bearer ${token}`;
       }
-      
-      // Request ID add karo (debugging ke liye)
-      config.headers['X-Request-ID'] = 
-        `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      
       return config;
     },
     (error) => Promise.reject(error)
   );
 
-  // ── Response Interceptor ──────────────────────────────────────────────────
   instance.interceptors.response.use(
     (response) => response,
     async (error: AxiosError) => {
-      const status          = error.response?.status;
       const originalRequest = error.config as InternalAxiosRequestConfig & {
-        _retryCount?: number;
-        _retry?:      boolean;
+        _retry?: boolean;
       };
 
-      const apiError = error.response?.data as {
-        error?:   string | any;
-        code?:    string;
-        message?: string;
-        details?: Array<{ field: string; message: string }>;
-      };
-
-      // ── Extract clean error message ───────────────────────────────────────────
-      function extractMessage(): string {
-        // Validation error array (Zod errors from backend)
-        if (Array.isArray(apiError?.error)) {
-          return apiError.error
-            .map((e: { message?: string; path?: string[] }) =>
-              e.path?.length ? `${e.path.join('.')}: ${e.message}` : e.message
-            )
-            .filter(Boolean)
-            .join(', ');
-        }
-
-        // Details array
-        if (Array.isArray(apiError?.details)) {
-          return apiError.details
-            .map(d => `${d.field}: ${d.message}`)
-            .join(', ');
-        }
-
-        // String error
-        if (typeof apiError?.error === 'string') return apiError.error;
-        if (typeof apiError?.message === 'string') return apiError.message;
-
-        // Network error
-        if (!error.response) return 'Network error — check your connection';
-
-        // Fallback with status
-        return `Request failed (${status})`;
+      // Not 401 → just reject
+      if (error.response?.status !== 401 || !originalRequest) {
+        return Promise.reject(error);
       }
 
-      // ── 401 Token Expired — Auto Refresh ─────────────────────────────────────
-      if (
-        status === 401 &&
-        apiError?.code === 'TOKEN_EXPIRED' &&
-        !originalRequest._retry
-      ) {
-        if (isRefreshing) {
-          // Queue this request until refresh completes
-          return new Promise((resolve, reject) => {
-            failedQueue.push({ resolve, reject });
-          }).then(token => {
-            originalRequest.headers.Authorization = `Bearer ${token}`;
-            return instance(originalRequest);
-          }).catch(err => Promise.reject(err));
-        }
+      // Auth endpoints → don't try to refresh
+      if (originalRequest.url?.includes('/auth/login') ||
+          originalRequest.url?.includes('/auth/register') ||
+          originalRequest.url?.includes('/auth/refresh')) {
+        return Promise.reject(error);
+      }
 
-        originalRequest._retry = true;
-        isRefreshing = true;
+      // Already retried → reject
+      if (originalRequest._retry) {
+        clearTokens();
+        redirectToLogin();
+        return Promise.reject(error);
+      }
 
-        try {
-          // Import here to avoid circular dep
-          const { useAuthStore } = await import('@/store/auth');
-          const refreshed = await useAuthStore.getState().refreshToken();
+      const refreshToken = getRefreshToken();
 
-          if (refreshed) {
-            const newToken = tokenManager.get()!;
-            processQueue(null, newToken);
+      // No refresh token → redirect to login
+      if (!refreshToken) {
+        clearTokens();
+        redirectToLogin();
+        return Promise.reject(error);
+      }
+
+      // Wait if refresh already in progress
+      if (isRefreshing) {
+        return new Promise((resolve) => {
+          addRefreshSubscriber((newToken) => {
             originalRequest.headers.Authorization = `Bearer ${newToken}`;
-            return instance(originalRequest);
-          } else {
-            processQueue(new Error('Refresh failed'));
-            if (typeof window !== 'undefined') {
-              window.location.href = '/login?reason=session_expired';
-            }
-            return Promise.reject(error);
+            resolve(instance(originalRequest));
+          });
+        });
+      }
+
+      // Start refresh
+      originalRequest._retry = true;
+      isRefreshing = true;
+
+      try {
+        console.log('🔄 Refreshing access token...');
+
+        const { data } = await axios.post(
+          `${API_BASE_URL}/auth/refresh`,
+          { refreshToken },
+          {
+            timeout: 15_000,
+            headers: { 'Content-Type': 'application/json' },
           }
-        } catch (refreshError) {
-          processQueue(refreshError);
-          return Promise.reject(refreshError);
-        } finally {
-          isRefreshing = false;
-        }
-      }
-
-      // ── Regular 401 — Not expired, just invalid ───────────────────────────────
-      if (status === 401 && !originalRequest._retry) {
-        tokenManager.clear();
-        if (typeof window !== 'undefined') {
-          const returnTo = window.location.pathname;
-          window.location.href = `/login?returnTo=${encodeURIComponent(returnTo)}`;
-        }
-        return Promise.reject(new Error('Session expired'));
-      }
-
-      // ── 429 - Rate limit
-      if (status === 429) {
-        const retryAfter = error.response?.headers['retry-after'];
-        return Promise.reject(
-          new Error(`Rate limit exceeded. Try again in ${retryAfter || 60}s`)
         );
-      }
 
-      // ── 5xx - Server error, retry karo (max 2 baar)
-      if (status && status >= 500 && status < 600) {
-        originalRequest._retryCount = originalRequest._retryCount || 0;
-        
-        if (originalRequest._retryCount < 2) {
-          originalRequest._retryCount++;
-          const delay = 1000 * originalRequest._retryCount; // 1s, 2s
-          await new Promise(resolve => setTimeout(resolve, delay));
-          return instance(originalRequest);
+        const newAccessToken = data.accessToken || data.token;
+        const newRefreshToken = data.refreshToken;
+
+        if (!newAccessToken) {
+          throw new Error('No access token in refresh response');
         }
-      }
 
-      return Promise.reject(new Error(extractMessage()));
+        setTokens(newAccessToken, newRefreshToken);
+        isRefreshing = false;
+        onTokenRefreshed(newAccessToken);
+
+        console.log('✅ Token refreshed');
+
+        // Retry original request
+        originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
+        return instance(originalRequest);
+      } catch (refreshError) {
+        isRefreshing = false;
+        refreshSubscribers = [];
+        clearTokens();
+
+        console.error('❌ Refresh failed:', refreshError);
+        redirectToLogin();
+
+        return Promise.reject(refreshError);
+      }
     }
   );
-
-  return instance;
 }
 
-// ── Exported Instances ────────────────────────────────────────────────────────
+// Register interceptors for both instances
+registerInterceptors(api);
+registerInterceptors(aiApi);
 
-// Default API client
-const api = createApiInstance(TIMEOUT_MS);
+// ── Redirect Helper ───────────────────────────────────────────────────────────
 
-// AI pipeline ke liye (zyada timeout)
-export const aiApi = createApiInstance(AI_TIMEOUT_MS);
+function redirectToLogin() {
+  if (typeof window === 'undefined') return;
+
+  // Don't redirect if already on login page
+  const currentPath = window.location.pathname;
+  if (currentPath.includes('/login') || currentPath.includes('/register')) {
+    return;
+  }
+
+  // Store current path for redirect after login
+  sessionStorage.setItem('redirectAfterLogin', currentPath);
+  window.location.href = '/login';
+}
+
+// ── Exports ───────────────────────────────────────────────────────────────────
 
 export default api;
-
-// ── Type-safe API helpers ─────────────────────────────────────────────────────
-
-export async function apiGet<T>(url: string, params?: object): Promise<T> {
-  const response = await api.get<T>(url, { params });
-  return response.data;
-}
-
-export async function apiPost<T>(url: string, data?: object): Promise<T> {
-  const response = await api.post<T>(url, data);
-  return response.data;
-}
-
-export async function apiPut<T>(url: string, data?: object): Promise<T> {
-  const response = await api.put<T>(url, data);
-  return response.data;
-}
-
-export async function apiPatch<T>(url: string, data?: object): Promise<T> {
-  const response = await api.patch<T>(url, data);
-  return response.data;
-}
-
-export async function apiDelete<T>(url: string): Promise<T> {
-  const response = await api.delete<T>(url);
-  return response.data;
-}
+export { api, aiApi, getAccessToken, getRefreshToken, setTokens, clearTokens };
