@@ -1,16 +1,54 @@
 'use client';
-import { useState } from 'react';
+
+import { useState, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import {
-  ArrowLeft, Copy, Download, RefreshCw, Sparkles, CheckCircle,
-  XCircle, ChevronRight, BarChart2, AlertTriangle, Info
+  ArrowLeft, Copy, Download, RefreshCw, CheckCircle,
+  XCircle, BarChart2, AlertTriangle
 } from 'lucide-react';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface Artifact {
+  id: string;
+  request_id?: string;
+  content_type?: string;
+  agent_type?: string;
+  body?: string;
+  content?: string;
+  version?: number;
+  status?: string;
+  quality_score?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+}
+
+interface ContentRequest {
+  id: string;
+  topic?: string;
+  status?: string;
+  metadata?: {
+    qualityScore?: number;
+    overallScore?: number;
+    brandScore?: number;
+    readabilityScore?: number;
+    platformScore?: number;
+    structureScore?: number;
+    humanizationScore?: number;
+    consistencyScore?: number;
+    clarityScore?: number;
+    engagementScore?: number;
+    ctaScore?: number;
+    flags?: string[];
+  };
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const PLATFORM_LABELS: Record<string, string> = {
   canonical: '📄 Canonical Draft',
@@ -18,30 +56,79 @@ const PLATFORM_LABELS: Record<string, string> = {
   linkedin_article: '📰 LinkedIn Article',
   x_post: '🐦 X Post',
   x_thread: '🧵 X Thread',
+  twitter_thread: '🧵 Twitter Thread',
+  twitter_post: '🐦 Twitter Post',
   blog_post: '📝 Blog Post',
+  blog: '📝 Blog Post',
   newsletter: '📧 Newsletter',
+  instagram_caption: '📸 Instagram Caption',
+  instagram_post: '📸 Instagram Post',
+  youtube_script: '🎬 YouTube Script',
 };
 
-const STATUS_COLORS: Record<string, any> = {
-  approved: 'success', published: 'success',
-  awaiting_review: 'warning', awaiting_qa: 'warning', running: 'warning',
-  failed: 'destructive', draft: 'secondary',
+const STATUS_COLORS: Record<string, 'success' | 'warning' | 'destructive' | 'secondary' | 'outline'> = {
+  approved: 'success',
+  published: 'success',
+  completed: 'success',
+  awaiting_review: 'warning',
+  awaiting_qa: 'warning',
+  running: 'warning',
+  processing: 'warning',
+  queued: 'secondary',
+  failed: 'destructive',
+  generation_failed: 'destructive',
+  draft: 'secondary',
 };
+
+// ─── Safe Helpers ─────────────────────────────────────────────────────────────
+
+function safeReplace(str: string | null | undefined, from: RegExp | string, to: string): string {
+  if (!str || typeof str !== 'string') return '';
+  return str.replace(from, to);
+}
+
+function safeString(val: unknown, fallback = ''): string {
+  if (val === null || val === undefined) return fallback;
+  if (typeof val === 'string') return val;
+  return String(val);
+}
+
+function getArtifactContent(artifact: Artifact | undefined | null): string {
+  if (!artifact) return '';
+  return artifact.body || artifact.content || '';
+}
+
+function getArtifactType(artifact: Artifact | undefined | null): string {
+  if (!artifact) return 'unknown';
+  return artifact.agent_type || artifact.content_type || 'unknown';
+}
+
+// ─── Score Bar Component ──────────────────────────────────────────────────────
 
 function ScoreBar({ label, value }: { label: string; value: number }) {
-  const color = value >= 80 ? 'bg-green-500' : value >= 60 ? 'bg-yellow-500' : 'bg-red-500';
+  const safeValue = Math.max(0, Math.min(100, value || 0));
+  const color =
+    safeValue >= 80 ? 'bg-green-500'
+      : safeValue >= 60 ? 'bg-yellow-500'
+        : 'bg-red-500';
+
   return (
     <div className="space-y-1">
       <div className="flex justify-between text-xs">
         <span className="text-muted-foreground">{label}</span>
-        <span className="font-medium">{value}/100</span>
+        <span className="font-medium">{safeValue}/100</span>
       </div>
       <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-        <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${value}%` }} />
+        <div
+          className={cn('h-full rounded-full transition-all', color)}
+          style={{ width: `${safeValue}%` }}
+        />
       </div>
     </div>
   );
 }
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function ContentWorkspacePage() {
   const { id } = useParams<{ id: string }>();
@@ -50,99 +137,183 @@ export default function ContentWorkspacePage() {
   const [activeTab, setActiveTab] = useState('canonical');
   const [copied, setCopied] = useState(false);
 
-  const { data, isLoading } = useQuery({
+  // Fetch content
+  const { data, isLoading, error } = useQuery({
     queryKey: ['content', id],
     queryFn: () => api.get(`/content/${id}`).then((r) => r.data),
+    enabled: !!id,
+    retry: 2,
   });
 
+  // Mutations
   const approveMutation = useMutation({
-    mutationFn: (action: 'approve' | 'reject') => api.patch(`/content/${id}/status`, { action }),
+    mutationFn: (action: 'approve' | 'reject') => {
+      // Find first artifact to approve
+      const artifactId = artifacts[0]?.id;
+      if (!artifactId) throw new Error('No artifact to approve');
+      const endpoint = action === 'approve' ? 'approve' : 'reject';
+      return api.post(`/content/${id}/artifacts/${artifactId}/${endpoint}`);
+    },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['content', id] }),
   });
 
   const rerunMutation = useMutation({
-    mutationFn: (agent: string) => api.post(`/content/${id}/rerun`, { agent }),
-    onSuccess: () => router.push(`/content/${id}/generating`),
+    mutationFn: () => api.post(`/content/${id}/rerun`),
+    onSuccess: (response) => {
+      const newId = response.data?.requestId || response.data?.contentId;
+      if (newId) {
+        router.push(`/content/${newId}/generating`);
+      }
+    },
   });
 
-  if (isLoading) return (
-    <div className="flex items-center justify-center h-full">
-      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-    </div>
-  );
+  const rehumanizeMutation = useMutation({
+    mutationFn: () => api.post(`/content/${id}/rehumanize`, { intensity: 'medium' }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['content', id] }),
+  });
 
-  const request = data?.request;
-  const artifacts = data?.artifacts ?? [];
-  const score = request?.metadata?.qualityScore;
+  // ── Safe Data Extraction ──────────────────────────────────────────────────
+  const request: ContentRequest | undefined = data?.request;
+  const artifacts: Artifact[] = useMemo(() => {
+    const raw = data?.artifacts ?? [];
+    return Array.isArray(raw) ? raw.filter(Boolean) : [];
+  }, [data]);
 
-  const activeArtifact = artifacts.find(
-    (a: any) => a.agent_type === activeTab || (activeTab === 'canonical' && a.agent_type === 'canonical_writer')
-  );
-  const content = activeArtifact?.content ?? '';
+  // Find active artifact safely
+  const activeArtifact = useMemo(() => {
+    if (artifacts.length === 0) return null;
+
+    // Try to find matching artifact
+    const found = artifacts.find((a) => {
+      const type = getArtifactType(a);
+      // Match various naming patterns
+      if (type === activeTab) return true;
+      if (activeTab === 'canonical' && (type === 'canonical' || type === 'canonical_writer')) return true;
+      return false;
+    });
+
+    // Fallback: return latest artifact
+    return found || artifacts[artifacts.length - 1];
+  }, [artifacts, activeTab]);
+
+  const content = getArtifactContent(activeArtifact);
 
   const copyContent = () => {
+    if (!content) return;
     navigator.clipboard.writeText(content);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const platformArtifacts = artifacts.filter((a: any) =>
-    ['canonical_writer', 'platform_optimizer'].includes(a.agent_type)
-  );
+  const score = request?.metadata?.overallScore ?? request?.metadata?.qualityScore ?? 0;
+
+  // ── Loading State ──────────────────────────────────────────────────────────
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-full min-h-screen">
+        <div className="text-center space-y-3">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto" />
+          <p className="text-sm text-muted-foreground">Loading content...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Error State ────────────────────────────────────────────────────────────
+  if (error || !request) {
+    return (
+      <div className="flex items-center justify-center h-full min-h-screen">
+        <div className="text-center space-y-4 max-w-md">
+          <AlertTriangle className="w-12 h-12 text-red-500 mx-auto" />
+          <div>
+            <h2 className="text-lg font-semibold">Content not found</h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              The content you are looking for does not exist or you do not have permission.
+            </p>
+          </div>
+          <Button onClick={() => router.push('/content')} variant="outline">
+            ← Back to Content Library
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const statusColor = STATUS_COLORS[request.status || ''] || 'outline';
+  const statusLabel = safeReplace(request.status, /_/g, ' ') || 'Unknown';
 
   return (
     <div className="h-full flex flex-col">
-      {/* Top bar */}
+      {/* ═══ Top Bar ═══ */}
       <div className="h-14 border-b px-6 flex items-center gap-4 shrink-0">
-        <button onClick={() => router.back()} className="text-muted-foreground hover:text-foreground transition-colors">
+        <button
+          onClick={() => router.back()}
+          className="text-muted-foreground hover:text-foreground transition-colors"
+        >
           <ArrowLeft className="w-4 h-4" />
         </button>
-        <h1 className="font-semibold flex-1 truncate">{request?.topic}</h1>
-        <Badge variant={STATUS_COLORS[request?.status] ?? 'outline'}>
-          {request?.status?.replace(/_/g, ' ')}
+
+        <h1 className="font-semibold flex-1 truncate">
+          {safeString(request.topic, 'Untitled Content')}
+        </h1>
+
+        <Badge variant={statusColor as 'default' | 'destructive' | 'outline' | 'secondary' | undefined}>
+          {statusLabel}
         </Badge>
-        {score && (
+
+        {score > 0 && (
           <div className="flex items-center gap-1 text-sm">
             <BarChart2 className="w-4 h-4 text-muted-foreground" />
             <span className="font-semibold">{score}/100</span>
           </div>
         )}
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={copyContent}>
-            <Download className="w-3.5 h-3.5" />
-            Export
-          </Button>
-        </div>
+
+        <Button variant="outline" size="sm" onClick={copyContent}>
+          <Download className="w-3.5 h-3.5 mr-1" />
+          Export
+        </Button>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Left panel — Platform tabs */}
+        {/* ═══ Left Panel — Platform Tabs ═══ */}
         <div className="w-48 border-r bg-muted/30 py-3 shrink-0 overflow-y-auto">
-          {Object.entries(PLATFORM_LABELS).map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setActiveTab(key)}
-              className={cn(
-                'w-full text-left px-4 py-2.5 text-sm transition-colors',
-                activeTab === key
-                  ? 'bg-primary/10 text-primary font-medium border-r-2 border-primary'
-                  : 'text-muted-foreground hover:bg-accent hover:text-foreground'
-              )}
-            >
-              {label}
-            </button>
-          ))}
+          {Object.entries(PLATFORM_LABELS).map(([key, label]) => {
+            // Check if this platform has content
+            const hasContent = artifacts.some((a) => {
+              const type = getArtifactType(a);
+              return type === key || (key === 'canonical' && type.includes('canonical'));
+            });
+
+            return (
+              <button
+                key={key}
+                onClick={() => setActiveTab(key)}
+                className={cn(
+                  'w-full text-left px-4 py-2.5 text-sm transition-colors',
+                  activeTab === key
+                    ? 'bg-primary/10 text-primary font-medium border-r-2 border-primary'
+                    : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                  !hasContent && 'opacity-50'
+                )}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
 
-        {/* Center — Editor */}
+        {/* ═══ Center — Editor ═══ */}
         <div className="flex-1 flex flex-col overflow-hidden">
           <div className="flex items-center justify-between px-6 py-3 border-b">
-            <span className="text-sm font-medium">{PLATFORM_LABELS[activeTab]}</span>
-            <Button variant="ghost" size="sm" onClick={copyContent}>
-              <Copy className="w-3.5 h-3.5" />
+            <span className="text-sm font-medium">
+              {PLATFORM_LABELS[activeTab] || activeTab}
+            </span>
+            <Button variant="ghost" size="sm" onClick={copyContent} disabled={!content}>
+              <Copy className="w-3.5 h-3.5 mr-1" />
               {copied ? 'Copied!' : 'Copy'}
             </Button>
           </div>
+
           <div className="flex-1 overflow-y-auto p-6">
             {content ? (
               <div className="prose prose-sm max-w-none">
@@ -151,67 +322,80 @@ export default function ContentWorkspacePage() {
                 </pre>
               </div>
             ) : (
-              <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-                No content for this platform yet
+              <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+                <p className="text-sm">No content for this platform yet</p>
+                {artifacts.length > 0 && (
+                  <p className="text-xs mt-2">
+                    Available: {artifacts.map(a => getArtifactType(a)).join(', ')}
+                  </p>
+                )}
               </div>
             )}
           </div>
-          {/* Agent actions */}
-          <div className="border-t px-6 py-3 flex items-center gap-2">
+
+          {/* Agent Actions */}
+          <div className="border-t px-6 py-3 flex items-center gap-2 flex-wrap">
             <span className="text-xs text-muted-foreground mr-2">Re-run:</span>
-            {[
-              { agent: 'canonical_writer', label: 'Regenerate' },
-              { agent: 'humanizer', label: 'Re-humanize' },
-              { agent: 'brand_optimizer', label: 'Re-brand' },
-              { agent: 'qa', label: 'Re-run QA' },
-            ].map(({ agent, label }) => (
-              <Button
-                key={agent}
-                variant="outline"
-                size="sm"
-                onClick={() => rerunMutation.mutate(agent)}
-                loading={rerunMutation.isPending}
-              >
-                <RefreshCw className="w-3 h-3" />
-                {label}
-              </Button>
-            ))}
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => rerunMutation.mutate()}
+              disabled={rerunMutation.isPending}
+            >
+              <RefreshCw className={cn('w-3 h-3 mr-1', rerunMutation.isPending && 'animate-spin')} />
+              Regenerate
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => rehumanizeMutation.mutate()}
+              disabled={rehumanizeMutation.isPending}
+            >
+              <RefreshCw className={cn('w-3 h-3 mr-1', rehumanizeMutation.isPending && 'animate-spin')} />
+              Re-humanize
+            </Button>
           </div>
         </div>
 
-        {/* Right panel — Intelligence sidebar */}
+        {/* ═══ Right Panel — Intelligence Sidebar ═══ */}
         <div className="w-64 border-l shrink-0 overflow-y-auto p-4 space-y-5">
-          {/* Quality scores — spec weights */}
+          {/* Quality Scores */}
           <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Quality Scores</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+              Quality Scores
+            </h3>
             <div className="space-y-2.5">
-              <ScoreBar label="Overall" value={request?.metadata?.overallScore ?? 0} />
+              <ScoreBar label="Overall" value={request.metadata?.overallScore ?? 0} />
               <div className="border-t my-2" />
-              <ScoreBar label="Brand (20%)" value={request?.metadata?.brandScore ?? 0} />
-              <ScoreBar label="Readability (15%)" value={request?.metadata?.readabilityScore ?? 0} />
-              <ScoreBar label="Platform (15%)" value={request?.metadata?.platformScore ?? 0} />
-              <ScoreBar label="Structure (10%)" value={request?.metadata?.structureScore ?? 0} />
-              <ScoreBar label="Humanization (10%)" value={request?.metadata?.humanizationScore ?? 0} />
-              <ScoreBar label="Consistency (10%)" value={request?.metadata?.consistencyScore ?? 0} />
-              <ScoreBar label="Clarity (10%)" value={request?.metadata?.clarityScore ?? 0} />
-              <ScoreBar label="Engagement (5%)" value={request?.metadata?.engagementScore ?? 0} />
-              <ScoreBar label="CTA (5%)" value={request?.metadata?.ctaScore ?? 0} />
+              <ScoreBar label="Brand (20%)" value={request.metadata?.brandScore ?? 0} />
+              <ScoreBar label="Readability (15%)" value={request.metadata?.readabilityScore ?? 0} />
+              <ScoreBar label="Platform (15%)" value={request.metadata?.platformScore ?? 0} />
+              <ScoreBar label="Structure (10%)" value={request.metadata?.structureScore ?? 0} />
+              <ScoreBar label="Humanization (10%)" value={request.metadata?.humanizationScore ?? 0} />
+              <ScoreBar label="Consistency (10%)" value={request.metadata?.consistencyScore ?? 0} />
+              <ScoreBar label="Clarity (10%)" value={request.metadata?.clarityScore ?? 0} />
+              <ScoreBar label="Engagement (5%)" value={request.metadata?.engagementScore ?? 0} />
+              <ScoreBar label="CTA (5%)" value={request.metadata?.ctaScore ?? 0} />
             </div>
           </div>
 
-          {/* QA flags */}
+          {/* QA Findings */}
           <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">QA Findings</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+              QA Findings
+            </h3>
             <div className="space-y-1.5">
-              {(request?.metadata?.flags ?? []).length === 0 ? (
+              {(request.metadata?.flags ?? []).length === 0 ? (
                 <div className="flex items-center gap-2 text-xs text-green-600">
                   <CheckCircle className="w-3.5 h-3.5" /> No issues found
                 </div>
               ) : (
-                (request?.metadata?.flags ?? []).map((flag: string, i: number) => (
+                (request.metadata?.flags ?? []).map((flag: string, i: number) => (
                   <div key={i} className="flex items-center gap-2 text-xs text-yellow-600">
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                    <span>{flag.replace(/_/g, ' ')}</span>
+                    <span>{safeReplace(flag, /_/g, ' ')}</span>
                   </div>
                 ))
               )}
@@ -223,40 +407,60 @@ export default function ContentWorkspacePage() {
 
           {/* Approval */}
           <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Approval</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+              Approval
+            </h3>
             <div className="flex flex-col gap-2">
               <Button
                 size="sm"
                 className="w-full"
                 onClick={() => approveMutation.mutate('approve')}
-                loading={approveMutation.isPending}
-                disabled={request?.status === 'approved'}
+                disabled={approveMutation.isPending || request.status === 'approved'}
               >
-                <CheckCircle className="w-3.5 h-3.5" /> Approve
+                <CheckCircle className="w-3.5 h-3.5 mr-1" /> Approve
               </Button>
               <Button
                 size="sm"
                 variant="outline"
                 className="w-full text-destructive hover:bg-destructive/10"
                 onClick={() => approveMutation.mutate('reject')}
-                loading={approveMutation.isPending}
+                disabled={approveMutation.isPending}
               >
-                <XCircle className="w-3.5 h-3.5" /> Reject
+                <XCircle className="w-3.5 h-3.5 mr-1" /> Reject
               </Button>
             </div>
           </div>
 
-          {/* Version history */}
+          {/* Version History */}
           <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">Version History</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+              Version History
+            </h3>
             <div className="space-y-1">
-              {artifacts.slice().reverse().map((a: any, i: number) => (
-                <div key={a.id} className="flex items-center gap-2 text-xs py-1 border-b border-border/50 last:border-0">
-                  <span className="text-muted-foreground">v{artifacts.length - i}</span>
-                  <span className="flex-1 truncate">{a.agent_type.replace(/_/g, ' ')}</span>
-                  {i === 0 && <Badge variant="secondary" className="text-[10px] px-1.5 py-0">current</Badge>}
-                </div>
-              ))}
+              {artifacts.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No versions yet</p>
+              ) : (
+                artifacts.slice().reverse().map((a, i) => {
+                  const type = getArtifactType(a);
+                  const displayName = safeReplace(type, /_/g, ' ');
+                  return (
+                    <div
+                      key={a.id || i}
+                      className="flex items-center gap-2 text-xs py-1 border-b border-border/50 last:border-0"
+                    >
+                      <span className="text-muted-foreground">v{artifacts.length - i}</span>
+                      <span className="flex-1 truncate capitalize">
+                        {displayName || 'Unknown'}
+                      </span>
+                      {i === 0 && (
+                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                          current
+                        </Badge>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </div>
