@@ -180,7 +180,7 @@ async def health():
 
 # ── Pipeline Timeout Helper ───────────────────────────────────────────────────
 
-PIPELINE_TIMEOUT = int(os.getenv("PIPELINE_TIMEOUT_SECONDS", "90"))
+PIPELINE_TIMEOUT = int(os.getenv("PIPELINE_TIMEOUT_SECONDS", "150"))
 
 async def run_with_timeout(coro, timeout: int = PIPELINE_TIMEOUT):
     """Coroutine ko timeout ke saath run karo."""
