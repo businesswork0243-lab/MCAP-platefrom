@@ -3,9 +3,15 @@
 import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
+import {
+  LayoutDashboard, Sparkles, FileText, Users, BarChart3,
+  CheckCircle, TrendingUp, Clock, Palette, FileStack,
+  Zap, ArrowRight
+} from 'lucide-react';
 import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth';
 import { formatRelative, formatDuration, formatNumber } from '@/lib/utils';
+import { PlatformIcon, getPlatformConfig } from '@/components/platform-icons';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,51 +28,69 @@ interface ContentRequest {
   status:          string;
   target_platform: string;
   created_at:      string;
-  platforms:       string[];
+  platforms:       string[] | string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
-  approved:        { label: 'Ready',        color: 'text-green-400 bg-green-500/15 border-green-500/30'  },
-  published:       { label: 'Published',    color: 'text-blue-400 bg-blue-500/15 border-blue-500/30'    },
-  awaiting_review: { label: 'Review',       color: 'text-amber-400 bg-amber-500/15 border-amber-500/30' },
-  running:         { label: 'Generating',   color: 'text-violet-400 bg-violet-500/15 border-violet-500/30'},
-  queued:          { label: 'Queued',       color: 'text-gray-400 bg-gray-500/15 border-gray-500/30'    },
-  generation_failed: { label: 'Failed',     color: 'text-red-400 bg-red-500/15 border-red-500/30'      },
+  approved:          { label: 'Ready',      color: 'text-green-400 bg-green-500/15 border-green-500/30'    },
+  published:         { label: 'Published',  color: 'text-blue-400 bg-blue-500/15 border-blue-500/30'       },
+  awaiting_review:   { label: 'Review',     color: 'text-amber-400 bg-amber-500/15 border-amber-500/30'    },
+  running:           { label: 'Generating', color: 'text-violet-400 bg-violet-500/15 border-violet-500/30' },
+  processing:        { label: 'Processing', color: 'text-violet-400 bg-violet-500/15 border-violet-500/30' },
+  queued:            { label: 'Queued',     color: 'text-gray-400 bg-gray-500/15 border-gray-500/30'       },
+  generation_failed: { label: 'Failed',     color: 'text-red-400 bg-red-500/15 border-red-500/30'          },
+  failed:            { label: 'Failed',     color: 'text-red-400 bg-red-500/15 border-red-500/30'          },
+  completed:         { label: 'Complete',   color: 'text-green-400 bg-green-500/15 border-green-500/30'    },
 };
 
-const PLATFORM_ICONS: Record<string, string> = {
-  linkedin_post:     '💼',
-  linkedin_article:  '📰',
-  twitter_thread:    '🐦',
-  x_thread:         '🐦',
-  blog_post:        '✍️',
-  newsletter:       '📧',
-  instagram_caption:'📸',
-  youtube_script:   '🎬',
-};
+// ─── Safe Helpers ─────────────────────────────────────────────────────────────
+
+function parsePlatforms(raw: string[] | string | null | undefined): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw !== 'string') return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function getStatusConfig(status: string | null | undefined) {
+  if (!status || typeof status !== 'string') {
+    return { label: 'Unknown', color: 'text-gray-400 bg-gray-500/15 border-gray-500/30' };
+  }
+  return STATUS_CONFIG[status] ?? {
+    label: status.replace(/_/g, ' '),
+    color: 'text-gray-400 bg-gray-500/15 border-gray-500/30',
+  };
+}
 
 // ─── Sub Components ───────────────────────────────────────────────────────────
 
 function StatCard({
   label,
   value,
-  icon,
+  Icon,
   color,
+  bgColor,
   sub,
 }: {
-  label: string;
-  value: string | number | null | undefined;
-  icon:  string;
-  color: string;
-  sub?:  string;
+  label:   string;
+  value:   string | number | null | undefined;
+  Icon:    React.ComponentType<{ className?: string }>;
+  color:   string;
+  bgColor: string;
+  sub?:    string;
 }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      className="p-5 bg-white/3 border border-white/10 rounded-2xl hover:border-white/15 transition-all"
+      className="p-5 bg-white/[0.03] border border-white/10 rounded-2xl hover:border-white/15 transition-all"
     >
       <div className="flex items-start justify-between">
         <div className="flex-1 min-w-0">
@@ -78,8 +102,8 @@ function StatCard({
             <p className="text-xs text-gray-600 mt-0.5">{sub}</p>
           )}
         </div>
-        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${color}`}>
-          <span className="text-lg">{icon}</span>
+        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${bgColor}`}>
+          <Icon className={`w-5 h-5 ${color}`} />
         </div>
       </div>
     </motion.div>
@@ -87,30 +111,35 @@ function StatCard({
 }
 
 function RecentContentRow({ item }: { item: ContentRequest }) {
-  const status  = STATUS_CONFIG[item.status] ?? {
-    label: item.status.replace(/_/g, ' '),
-    color: 'text-gray-400 bg-gray-500/15 border-gray-500/30',
-  };
-
-  const platforms: string[] = (() => {
-    if (Array.isArray(item.platforms)) return item.platforms;
-    try { return JSON.parse(item.platforms as unknown as string); } catch { return []; }
-  })();
+  const status = getStatusConfig(item.status);
+  const platforms = parsePlatforms(item.platforms);
 
   return (
     <Link
       href={`/content/${item.id}`}
       className="flex items-center gap-4 py-3.5 px-4 rounded-xl hover:bg-white/5 transition-all group"
     >
-      {/* Platform icons */}
-      <div className="flex -space-x-1 shrink-0">
-        {platforms.slice(0, 3).map((p, i) => (
-          <span key={i} className="text-sm" title={p}>
-            {PLATFORM_ICONS[p] ?? '📄'}
-          </span>
-        ))}
-        {platforms.length > 3 && (
-          <span className="text-xs text-gray-600">+{platforms.length - 3}</span>
+      {/* Platform icons with real brand icons */}
+      <div className="flex items-center gap-1 shrink-0 min-w-[60px]">
+        {platforms.length === 0 ? (
+          <PlatformIcon platform="canonical" size="sm" className="opacity-50" />
+        ) : (
+          <>
+            {platforms.slice(0, 3).map((p, i) => (
+              <div
+                key={i}
+                className="w-6 h-6 rounded-md bg-white/5 border border-white/10 flex items-center justify-center shrink-0"
+                title={getPlatformConfig(p).label}
+              >
+                <PlatformIcon platform={p} size="sm" />
+              </div>
+            ))}
+            {platforms.length > 3 && (
+              <span className="text-xs text-gray-600 font-medium ml-1">
+                +{platforms.length - 3}
+              </span>
+            )}
+          </>
         )}
       </div>
 
@@ -135,31 +164,21 @@ function RecentContentRow({ item }: { item: ContentRequest }) {
 function EmptyState() {
   return (
     <div className="flex flex-col items-center justify-center py-16 text-center">
-      <div className="text-5xl mb-4">✦</div>
+      <div className="w-16 h-16 rounded-2xl bg-violet-500/10 border border-violet-500/20 flex items-center justify-center mb-4">
+        <Sparkles className="w-8 h-8 text-violet-400" />
+      </div>
       <h3 className="text-white font-medium">No content yet</h3>
       <p className="text-gray-500 text-sm mt-1 mb-6">
         Create your first content piece to get started
       </p>
       <Link
         href="/content/new"
-        className="px-5 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-xl transition-all"
+        className="flex items-center gap-2 px-5 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-xl transition-all"
       >
-        Create Content →
+        <Sparkles className="w-4 h-4" />
+        Create Content
+        <ArrowRight className="w-4 h-4" />
       </Link>
-    </div>
-  );
-}
-
-function SkeletonCard() {
-  return (
-    <div className="p-5 bg-white/3 border border-white/10 rounded-2xl animate-pulse">
-      <div className="flex justify-between">
-        <div className="space-y-2">
-          <div className="h-3 w-20 bg-white/10 rounded" />
-          <div className="h-7 w-12 bg-white/10 rounded" />
-        </div>
-        <div className="w-10 h-10 bg-white/10 rounded-xl" />
-      </div>
     </div>
   );
 }
@@ -172,20 +191,20 @@ export default function DashboardPage() {
   const { data: overview, isLoading: overviewLoading } = useQuery({
     queryKey: ['analytics-overview'],
     queryFn:  () => api.get('/analytics/overview').then(r => r.data),
-    staleTime: 2 * 60 * 1000, // 2 min
+    staleTime: 2 * 60 * 1000,
   });
 
   const { data: recentData, isLoading: recentLoading } = useQuery({
     queryKey: ['recent-content'],
     queryFn:  () => api.get('/content?limit=8').then(r => r.data),
-    staleTime: 30 * 1000, // 30 sec
+    staleTime: 30 * 1000,
   });
 
   const stats: ContentStats | undefined = overview?.content;
-  const recent: ContentRequest[]        = recentData?.requests ?? [];
+  const recent: ContentRequest[] = recentData?.requests ?? [];
 
-  // Greeting based on time
-  const hour     = new Date().getHours();
+  // Greeting
+  const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
   const firstName = user?.name?.split(' ')[0] ?? 'there';
 
@@ -202,7 +221,7 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-[#080809] text-white">
       <div className="max-w-5xl mx-auto px-6 py-10 space-y-8">
 
-        {/* ── Header ── */}
+        {/* ═══ Header ═══ */}
         <motion.div
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
@@ -223,48 +242,62 @@ export default function DashboardPage() {
             href="/content/new"
             className="flex items-center gap-2 px-5 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-xl transition-all shadow-lg shadow-violet-500/20"
           >
-            <span>✦</span>
+            <Sparkles className="w-4 h-4" />
             New Content
           </Link>
         </motion.div>
 
-        {/* ── Stats Grid ── */}
+        {/* ═══ Stats Grid ═══ */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {overviewLoading ? (
-            Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
+            Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="p-5 bg-white/[0.03] border border-white/10 rounded-2xl animate-pulse">
+                <div className="flex justify-between">
+                  <div className="space-y-2">
+                    <div className="h-3 w-20 bg-white/10 rounded" />
+                    <div className="h-7 w-12 bg-white/10 rounded" />
+                  </div>
+                  <div className="w-10 h-10 bg-white/10 rounded-xl" />
+                </div>
+              </div>
+            ))
           ) : (
             <>
               <StatCard
                 label="Total Generated"
                 value={stats?.total_requests ? formatNumber(parseInt(stats.total_requests)) : null}
-                icon="✦"
-                color="bg-violet-500/20"
+                Icon={Sparkles}
+                color="text-violet-400"
+                bgColor="bg-violet-500/20"
               />
               <StatCard
                 label="Approved"
                 value={stats?.approved ? formatNumber(parseInt(stats.approved)) : null}
-                icon="✓"
-                color="bg-green-500/20"
+                Icon={CheckCircle}
+                color="text-green-400"
+                bgColor="bg-green-500/20"
                 sub={approvalRate !== null ? `${approvalRate}% approval rate` : undefined}
               />
               <StatCard
                 label="Published"
                 value={stats?.published ? formatNumber(parseInt(stats.published)) : null}
-                icon="↗"
-                color="bg-blue-500/20"
+                Icon={TrendingUp}
+                color="text-blue-400"
+                bgColor="bg-blue-500/20"
               />
               <StatCard
                 label="Avg. Time"
                 value={avgTime}
-                icon="⏱"
-                color="bg-amber-500/20"
+                Icon={Clock}
+                color="text-amber-400"
+                bgColor="bg-amber-500/20"
                 sub="per generation"
               />
             </>
           )}
         </div>
 
-        {/* ── Quick Actions ── */}
+        {/* ═══ Quick Actions ═══ */}
         <div>
           <h2 className="text-xs font-semibold text-gray-600 uppercase tracking-widest mb-3">
             Quick Actions
@@ -273,31 +306,35 @@ export default function DashboardPage() {
             {[
               {
                 href:  '/content/new',
-                icon:  '✦',
+                Icon:  Sparkles,
                 label: 'New Content',
                 desc:  'Start generating',
                 color: 'border-violet-500/30 hover:bg-violet-500/10',
+                iconColor: 'text-violet-400',
               },
               {
                 href:  '/brand',
-                icon:  '◉',
+                Icon:  Palette,
                 label: 'Brand Profiles',
                 desc:  'Manage voice & ICPs',
                 color: 'border-white/10 hover:bg-white/5',
+                iconColor: 'text-blue-400',
               },
               {
                 href:  '/templates',
-                icon:  '❐',
+                Icon:  FileStack,
                 label: 'Templates',
                 desc:  'Saved configurations',
                 color: 'border-white/10 hover:bg-white/5',
+                iconColor: 'text-emerald-400',
               },
               {
                 href:  '/analytics',
-                icon:  '◎',
+                Icon:  BarChart3,
                 label: 'Analytics',
                 desc:  'Performance overview',
                 color: 'border-white/10 hover:bg-white/5',
+                iconColor: 'text-amber-400',
               },
             ].map(action => (
               <Link
@@ -308,7 +345,7 @@ export default function DashboardPage() {
                   ${action.color}
                 `}
               >
-                <span className="text-xl">{action.icon}</span>
+                <action.Icon className={`w-5 h-5 ${action.iconColor}`} />
                 <p className="text-sm font-medium text-white mt-2 group-hover:text-violet-300 transition-colors">
                   {action.label}
                 </p>
@@ -318,7 +355,7 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* ── Recent Content ── */}
+        {/* ═══ Recent Content ═══ */}
         <div>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xs font-semibold text-gray-600 uppercase tracking-widest">
@@ -326,18 +363,19 @@ export default function DashboardPage() {
             </h2>
             <Link
               href="/content"
-              className="text-xs text-gray-500 hover:text-white transition-colors"
+              className="text-xs text-gray-500 hover:text-white transition-colors flex items-center gap-1"
             >
-              View all →
+              View all
+              <ArrowRight className="w-3 h-3" />
             </Link>
           </div>
 
-          <div className="bg-white/3 border border-white/10 rounded-2xl overflow-hidden">
+          <div className="bg-white/[0.03] border border-white/10 rounded-2xl overflow-hidden">
             {recentLoading ? (
               <div className="divide-y divide-white/5">
                 {Array.from({ length: 5 }).map((_, i) => (
                   <div key={i} className="flex items-center gap-4 px-4 py-4 animate-pulse">
-                    <div className="w-6 h-4 bg-white/10 rounded" />
+                    <div className="w-16 h-6 bg-white/10 rounded" />
                     <div className="flex-1 space-y-1.5">
                       <div className="h-3.5 bg-white/10 rounded w-3/4" />
                       <div className="h-2.5 bg-white/10 rounded w-1/4" />
