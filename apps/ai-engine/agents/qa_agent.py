@@ -201,7 +201,9 @@ def _local_analysis(
     ]
     for pattern in vague_patterns:
         if re.search(pattern, content_lower):
-            flags.append(f"vague_claim: unsupported statement found ({pattern.strip(r'\\b')})")
+            # ✅ FIX: Extract pattern text outside f-string
+            clean_pattern = pattern.replace(r'\b', '').strip()
+            flags.append(f"vague_claim: unsupported statement found ({clean_pattern})")
             break  # One flag is enough
 
     return flags
