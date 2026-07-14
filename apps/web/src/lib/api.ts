@@ -4,7 +4,7 @@ import axios, { AxiosError, InternalAxiosRequestConfig, AxiosInstance } from 'ax
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://mcap-api.onrender.com/api';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://mcap-platefrom-production.up.railway.app/api';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -99,8 +99,8 @@ function registerInterceptors(instance: AxiosInstance) {
 
       // Auth endpoints → don't try to refresh
       if (originalRequest.url?.includes('/auth/login') ||
-          originalRequest.url?.includes('/auth/register') ||
-          originalRequest.url?.includes('/auth/refresh')) {
+        originalRequest.url?.includes('/auth/register') ||
+        originalRequest.url?.includes('/auth/refresh')) {
         return Promise.reject(error);
       }
 
