@@ -145,6 +145,7 @@ CREATE INDEX IF NOT EXISTS idx_icp_profiles_brand
   ON icp_profiles(brand_profile_id);
 
 -- Trigger for updated_at
+DROP TRIGGER IF EXISTS trg_icp_profiles_updated_at ON icp_profiles;
 CREATE TRIGGER trg_icp_profiles_updated_at
   BEFORE UPDATE ON icp_profiles
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
@@ -183,6 +184,7 @@ CREATE TABLE IF NOT EXISTS writing_structures (
 CREATE INDEX IF NOT EXISTS idx_writing_structures_org
   ON writing_structures(organization_id);
 
+DROP TRIGGER IF EXISTS trg_writing_structures_updated_at ON writing_structures;
 CREATE TRIGGER trg_writing_structures_updated_at
   BEFORE UPDATE ON writing_structures
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
@@ -195,6 +197,7 @@ ALTER TABLE content_requests
   -- ICP Selection
   ADD COLUMN IF NOT EXISTS icp_profile_id         UUID
     REFERENCES icp_profiles(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS error_message          TEXT,
 
   -- Custom Writing Structure
   ADD COLUMN IF NOT EXISTS custom_structure_id    UUID
@@ -276,6 +279,7 @@ CREATE INDEX IF NOT EXISTS idx_repurposes_source
 CREATE INDEX IF NOT EXISTS idx_repurposes_org
   ON content_repurposes(organization_id);
 
+DROP TRIGGER IF EXISTS trg_content_repurposes_updated_at ON content_repurposes;
 CREATE TRIGGER trg_content_repurposes_updated_at
   BEFORE UPDATE ON content_repurposes
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
@@ -325,6 +329,7 @@ CREATE TABLE IF NOT EXISTS clients (
 CREATE INDEX IF NOT EXISTS idx_clients_org
   ON clients(organization_id);
 
+DROP TRIGGER IF EXISTS trg_clients_updated_at ON clients;
 CREATE TRIGGER trg_clients_updated_at
   BEFORE UPDATE ON clients
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();

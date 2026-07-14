@@ -411,7 +411,7 @@ brandRouter.post(
         return
       }
 
-      const savedDocs = []
+      const savedDocs: any[] = []
 
       for (const file of files) {
         const docId = uuidv4()

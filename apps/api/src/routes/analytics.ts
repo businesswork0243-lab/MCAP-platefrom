@@ -323,7 +323,7 @@ function fillMissingDays(
     const dStr = typeof r.day === 'string' ? r.day : new Date(r.day).toISOString().slice(0, 10);
     return [dStr, r];
   }));
-  const result = [];
+  const result: Array<{ day: string; requests_created: number; completed: number; failed: number }> = [];
 
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date();

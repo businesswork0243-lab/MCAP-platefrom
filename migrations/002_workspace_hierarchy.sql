@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS departments (
   updated_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE INDEX idx_departments_org ON departments(organization_id);
+CREATE INDEX IF NOT EXISTS idx_departments_org ON departments(organization_id);
 
 -- =============================================
 -- CAMPAIGNS (under Projects, above Content Requests)
@@ -40,8 +40,8 @@ CREATE TABLE IF NOT EXISTS campaigns (
   updated_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
-CREATE INDEX idx_campaigns_org     ON campaigns(organization_id);
-CREATE INDEX idx_campaigns_project ON campaigns(project_id);
+CREATE INDEX IF NOT EXISTS idx_campaigns_org     ON campaigns(organization_id);
+CREATE INDEX IF NOT EXISTS idx_campaigns_project ON campaigns(project_id);
 
 -- =============================================
 -- Link Content Requests → Campaigns (optional)
@@ -75,10 +75,12 @@ ALTER TABLE agent_executions
 -- =============================================
 -- Triggers for updated_at
 -- =============================================
+DROP TRIGGER IF EXISTS update_departments_updated_at ON departments;
 CREATE TRIGGER update_departments_updated_at
   BEFORE UPDATE ON departments
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
+DROP TRIGGER IF EXISTS update_campaigns_updated_at ON campaigns;
 CREATE TRIGGER update_campaigns_updated_at
   BEFORE UPDATE ON campaigns
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
