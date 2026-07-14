@@ -77,8 +77,8 @@ ALTER TABLE agent_executions
 -- =============================================
 CREATE TRIGGER update_departments_updated_at
   BEFORE UPDATE ON departments
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 CREATE TRIGGER update_campaigns_updated_at
   BEFORE UPDATE ON campaigns
-  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
